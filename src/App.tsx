@@ -4,6 +4,15 @@ import { ViewerCanvas } from './components/ViewerCanvas';
 import { parseModel } from './viewer/loadModel';
 import type { ModelInfo } from './viewer/Viewer';
 
+// 放在 public/samples 里的示例模型。BASE_URL 在本地是 /，部署到 GitHub Pages 后是 /StlViewer/
+const SAMPLES = [
+  { file: '3DBenchy.stl', label: '3DBenchy 小船（3D 打印测试模型）' },
+  { file: 'gear.stl', label: '齿轮' },
+  { file: 'teapot.stl', label: '犹他茶壶' },
+  { file: 'vase.stl', label: '花瓶' },
+  { file: 'box.stl', label: '长方体 20×10×30' },
+];
+
 // 没有上传文件时先显示一个示例形状
 function sampleGeometry() {
   return new THREE.TorusKnotGeometry(20, 6, 200, 32);
@@ -25,6 +34,23 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  const [loading, setLoading] = useState(false);
+
+  const openSample = async (name: string) => {
+    if (!name) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${import.meta.env.BASE_URL}samples/${name}`);
+      if (!res.ok) throw new Error(`下载示例失败：HTTP ${res.status}`);
+      // 包装成 File，复用和“打开文件”完全相同的解析流程
+      await openFile(new File([await res.blob()], name));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
@@ -54,6 +80,18 @@ export default function App() {
           />
         </label>
         <p className="hint">也可以直接把文件拖进窗口</p>
+
+        <select
+          className="select"
+          value=""
+          disabled={loading}
+          onChange={(e) => openSample(e.target.value)}
+        >
+          <option value="">{loading ? '加载中…' : '或者选一个示例模型…'}</option>
+          {SAMPLES.map((s) => (
+            <option key={s.file} value={s.file}>{s.label}</option>
+          ))}
+        </select>
 
         {error && <p className="error">{error}</p>}
 

@@ -33,3 +33,7 @@ body {
 dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 12px 0; }
 dt { color: #9a9ca5; }
 dd { margin: 0; word-break: break-all; }
+.select {
+  width: 100%; margin: 4px 0 8px; padding: 6px 8px; border-radius: 6px;
+  background: #2a2c33; color: #e6e6e6; border: 1px solid #3a3d45; font: inherit; font-size: 13px;
+}
