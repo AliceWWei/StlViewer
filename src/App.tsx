@@ -59,7 +59,6 @@ function toErrorText(e: unknown): ErrorText {
   return () => message;
 }
 
-const LANGS: Lang[] = ['zh', 'en'];
 
 // 没有上传文件时先显示一个示例形状
 function sampleGeometry() {
@@ -71,6 +70,7 @@ const fmt = (n: number, digits = 1) =>
 
 export default function App() {
   const { lang, setLang, t } = useLang();
+  const otherLang: Lang = lang === 'zh' ? 'en' : 'zh';
   // 文件解析出来的原始几何体（文件坐标，单位未知）
   const [source, setSource] = useState<THREE.BufferGeometry | null>(sampleGeometry);
   const [fileUnit, setFileUnit] = useState<UnitName | null>(null); // 文件自己声明的单位（3MF）
@@ -248,17 +248,17 @@ export default function App() {
       {dragging && <div className="drop-overlay">{t.dropHint}</div>}
 
       <aside className="panel">
-        <div className="lang-switch" role="group" aria-label="Language">
-          {LANGS.map((l) => (
-            <button
-              key={l}
-              className={`small ${lang === l ? 'active' : ''}`}
-              aria-pressed={lang === l}
-              onClick={() => setLang(l)}
-            >
-              {MESSAGES[l].langName}
-            </button>
-          ))}
+        <div className="lang-switch">
+          {/* 一个按钮来回切换，按钮上显示“要切换到的语言”，用那种语言自己的名字 */}
+          <button
+            className="small"
+            lang={otherLang === 'zh' ? 'zh-CN' : 'en'}
+            title={MESSAGES[otherLang].switchTo}
+            aria-label={MESSAGES[otherLang].switchTo}
+            onClick={() => setLang(otherLang)}
+          >
+            {MESSAGES[otherLang].langName}
+          </button>
         </div>
         <h1>STL / OBJ / 3MF Viewer</h1>
         <label className="button">

@@ -10,6 +10,7 @@ export type Lang = 'zh' | 'en';
 
 const zh = {
   langName: '中文',
+  switchTo: '切换到中文',
   dropHint: '松开以加载模型',
   openFile: '打开文件',
   dragHint: '也可以直接把文件拖进窗口',
@@ -112,6 +113,7 @@ export type Messages = typeof zh;
 
 const en: Messages = {
   langName: 'English',
+  switchTo: 'Switch to English',
   dropHint: 'Drop to load the model',
   openFile: 'Open file',
   dragHint: 'You can also drag a file into the window',
