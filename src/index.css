@@ -21,6 +21,8 @@ body {
   padding: 16px; border-radius: 10px;
   background: rgba(20, 21, 25, 0.85);
   backdrop-filter: blur(6px);
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
 }
 .panel h1 { font-size: 18px; margin: 0 0 12px; }
 .button {
@@ -37,3 +39,19 @@ dd { margin: 0; word-break: break-all; }
   width: 100%; margin: 4px 0 8px; padding: 6px 8px; border-radius: 6px;
   background: #2a2c33; color: #e6e6e6; border: 1px solid #3a3d45; font: inherit; font-size: 13px;
 }
+.panel h2 {
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+  color: #9a9ca5; margin: 16px 0 6px; padding-top: 10px; border-top: 1px solid #2e3038;
+}
+.select.inline { width: auto; margin: 0; padding: 2px 4px; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; margin: 6px 0; }
+.range { display: flex; align-items: center; gap: 6px; }
+.range input { width: 100px; }
+.ok { color: #5ad17a; font-size: 13px; margin: 6px 0; }
+.warn { color: #ffb347; font-size: 13px; margin: 6px 0; }
+.label {
+  padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: 600;
+  white-space: nowrap; pointer-events: none;
+}
+.label-dim { background: rgba(245, 197, 66, 0.9); color: #1e1f24; }
+.label-measure { background: rgba(255, 211, 77, 0.95); color: #1e1f24; font-size: 13px; }
