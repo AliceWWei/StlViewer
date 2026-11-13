@@ -9,7 +9,8 @@ import type { UnitName } from './viewer/units';
 export type Lang = 'zh' | 'en';
 
 const zh = {
-  langName: '中文',
+  /** 切换按钮上显示的语言简称 */
+  langName: 'CN',
   switchTo: '切换到中文',
   dropHint: '松开以加载模型',
   openFile: '打开文件',
@@ -112,7 +113,7 @@ const zh = {
 export type Messages = typeof zh;
 
 const en: Messages = {
-  langName: 'English',
+  langName: 'EN',
   switchTo: 'Switch to English',
   dropHint: 'Drop to load the model',
   openFile: 'Open file',

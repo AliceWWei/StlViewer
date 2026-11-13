@@ -249,7 +249,7 @@ export default function App() {
 
       <aside className="panel">
         <div className="lang-switch">
-          {/* 一个按钮来回切换，按钮上显示“要切换到的语言”，用那种语言自己的名字 */}
+          {/* 一个按钮来回切换，按钮上显示“要切换到的语言”的简称：CN / EN */}
           <button
             className="small"
             lang={otherLang === 'zh' ? 'zh-CN' : 'en'}
