@@ -2,7 +2,7 @@
 
 A browser-based 3D model viewer for 3D-printing files, built with **React + TypeScript + Three.js (WebGL)**.
 
-**Live demo:** https://alicewwei.github.io/stl-viewer/
+**Live demo:** https://alicewwei.github.io/StlViewer/
 
 ![screenshot](docs/screenshot.png)
 
