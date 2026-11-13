@@ -6,6 +6,7 @@ import { parseModel } from './viewer/loadModel';
 import type { MeasureResult, ModelInfo, PickMode } from './viewer/Viewer';
 import { layerCount, sliceAt } from './viewer/slice';
 import { UNITS, suggestUnit, type UnitName } from './viewer/units';
+import { isFacingDown } from './viewer/orient';
 import {
   MATERIALS,
   PRINTERS,
@@ -46,6 +47,7 @@ export default function App() {
   const [unit, setUnit] = useState<UnitName>('mm');
   // 摆放朝向：每次“放平”都在这个旋转上再叠加一次
   const [orientation, setOrientation] = useState(() => new THREE.Quaternion());
+  const [faceNotice, setFaceNotice] = useState<string | null>(null);
   const [fileName, setFileName] = useState('示例：环面纽结');
   const [info, setInfo] = useState<ModelInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -82,6 +84,7 @@ export default function App() {
     setUnit(declaredUnit ?? 'mm');
     setOrientation(new THREE.Quaternion());
     setPickMode('none');
+    setFaceNotice(null);
   }, []);
 
   // 几何分析只在换模型时算一次（Benchy 22 万个三角形也只要几百毫秒）
@@ -129,12 +132,20 @@ export default function App() {
 
   // 放平：把点到的面的法线 n 转到正下方 (0, 0, -1)，这个面就贴在平台上了
   const onFacePick = useCallback((n: Vec3) => {
+    setPickMode('none');
+    if (isFacingDown(n)) {
+      // 比如 Benchy 的船底本来就是平的、已经贴在平台上，旋转量是 0，看起来像“没反应”
+      setFaceNotice('这个面已经朝下贴在平台上了，不需要再放平');
+      return;
+    }
+    setFaceNotice(null);
     const turn = new THREE.Quaternion().setFromUnitVectors(
       new THREE.Vector3(...n).normalize(),
       new THREE.Vector3(0, 0, -1),
     );
-    setOrientation((q) => turn.multiply(q));
-    setPickMode('none');
+    // 不能写 turn.multiply(q)：它会原地修改 turn，而 StrictMode 下这个函数会被调用两次，
+    // 第二次就变成 turn·q·q，旋转被叠加了两遍
+    setOrientation((q) => new THREE.Quaternion().multiplyQuaternions(turn, q));
   }, []);
 
   // 单位提示：按毫米理解时模型太小或太大，可能是用别的单位导出的
@@ -268,12 +279,21 @@ export default function App() {
         <div className="row">
           <button
             className={`small ${pickMode === 'face' ? 'active' : ''}`}
-            onClick={() => setPickMode(pickMode === 'face' ? 'none' : 'face')}
+            onClick={() => { setFaceNotice(null); setPickMode(pickMode === 'face' ? 'none' : 'face'); }}
           >
             {pickMode === 'face' ? '点击模型上的一个面…' : '选一个面放平'}
           </button>
-          <button className="small" onClick={() => setOrientation(new THREE.Quaternion())}>恢复原始朝向</button>
+          <button
+            className="small"
+            onClick={() => { setFaceNotice(null); setOrientation(new THREE.Quaternion()); }}
+          >
+            恢复原始朝向
+          </button>
         </div>
+        {pickMode === 'face' && (
+          <p className="hint">鼠标移到模型上，黄色高亮的那一片会被放到平台上（曲面取这一片的平均朝向）</p>
+        )}
+        {faceNotice && <p className="warn">{faceNotice}</p>}
 
         {analysis && (
           <>

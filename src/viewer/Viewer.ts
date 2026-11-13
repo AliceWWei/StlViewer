@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import type { Vec3 } from './geometry';
+import { toTriangleArray, type Vec3 } from './geometry';
+import { buildAdjacency, findFacePatch, type Adjacency, type FacePatch } from './orient';
 import { pointInPolygon, type Contour } from './slice';
 
 export type PickMode = 'none' | 'measure' | 'face';
@@ -49,6 +50,7 @@ export class Viewer {
   private boundsGroup = new THREE.Group();
   private printerGroup = new THREE.Group();
   private measureGroup = new THREE.Group();
+  private faceGroup = new THREE.Group(); // “放平”模式下鼠标所指的那一片表面的高亮
   private sliceGroup = new THREE.Group();
   /** 切片预览用的裁剪平面：只保留 y ≤ 切片高度 的部分 */
   private clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
@@ -66,10 +68,17 @@ export class Viewer {
   private measurePoints: THREE.Vector3[] = [];
   private pointerDown: { x: number; y: number } | null = null;
   private raycaster = new THREE.Raycaster();
+  /** 放平用的三角形数组和邻接表（显示坐标），第一次用到时才算，换模型时清空 */
+  private faceData: { tris: Float64Array; adjacency: Adjacency } | null = null;
+  private hoverFrame = 0;
+  private hoverEvent: PointerEvent | null = null;
 
   onMeasure: (result: MeasureResult | null) => void = () => {};
   /** “放平”模式下点到的面，法线是文件坐标 */
   onFacePick: (normal: Vec3) => void = () => {};
+
+  /** 放平时，和点到的三角形朝向相差多少度以内的相邻三角形算作同一个面 */
+  facePatchAngle = 12;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -110,7 +119,7 @@ export class Viewer {
 
     // 打印平台网格，选了打印机之后会换成打印机平台的大小
     this.grid = this.makeGrid(200);
-    this.scene.add(this.grid, this.boundsGroup, this.printerGroup, this.measureGroup, this.sliceGroup);
+    this.scene.add(this.grid, this.boundsGroup, this.printerGroup, this.measureGroup, this.faceGroup, this.sliceGroup);
 
     // 4. 轨道控制：鼠标左键旋转、滚轮缩放、右键平移
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -120,6 +129,8 @@ export class Viewer {
     const canvas = this.renderer.domElement;
     canvas.addEventListener('pointerdown', this.handlePointerDown);
     canvas.addEventListener('pointerup', this.handlePointerUp);
+    canvas.addEventListener('pointermove', this.handlePointerMove);
+    canvas.addEventListener('pointerleave', this.handlePointerLeave);
 
     // 容器大小变化时，更新画布和相机宽高比，否则模型会被拉伸
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -131,6 +142,8 @@ export class Viewer {
   /** 显示一个新的几何体，返回统计信息 */
   setGeometry(source: THREE.BufferGeometry, zUp = true): ModelInfo {
     this.clearModel();
+    this.faceData = null;
+    disposeGroup(this.faceGroup);
     // 复制一份再修改，不改动调用方传进来的几何体（React StrictMode 下 effect 会跑两次）
     const geometry = source.clone();
 
@@ -292,6 +305,7 @@ export class Viewer {
     this.pickMode = mode;
     this.renderer.domElement.style.cursor = mode === 'none' ? '' : 'crosshair';
     if (mode !== 'measure') this.clearMeasure();
+    if (mode !== 'face') disposeGroup(this.faceGroup);
   }
 
   clearMeasure() {
@@ -310,27 +324,90 @@ export class Viewer {
     if (this.pickMode === 'none' || !this.mesh || !down || e.button !== 0) return;
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return; // 是拖拽，不是点击
 
-    // 射线拾取：把鼠标位置换成 -1~1 的标准化坐标，从相机穿过这个点发一条射线
+    if (this.pickMode === 'face') {
+      const patch = this.pickPatch(e);
+      if (!patch) return;
+      // 平均法线是显示坐标，只需要逆旋转换回文件坐标（法线不受平移影响）
+      const n = new THREE.Vector3(...patch.normal).applyMatrix4(this.rotation.clone().invert()).normalize();
+      this.onFacePick([n.x, n.y, n.z]);
+      return;
+    }
+
+    const hit = this.raycast(e);
+    if (!hit) return;
+
+    if (this.measurePoints.length >= 2) this.clearMeasure(); // 第三下开始新的测量
+    this.measurePoints.push(hit.point.clone());
+    this.drawMeasure();
+  };
+
+  /** 射线拾取：把鼠标位置换成 -1~1 的标准化坐标，从相机穿过这个点发一条射线 */
+  private raycast(e: PointerEvent) {
+    if (!this.mesh) return undefined;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(
       ((e.clientX - rect.left) / rect.width) * 2 - 1,
       -((e.clientY - rect.top) / rect.height) * 2 + 1,
     );
     this.raycaster.setFromCamera(ndc, this.camera);
-    const hit = this.raycaster.intersectObject(this.mesh, false)[0];
-    if (!hit) return;
+    return this.raycaster.intersectObject(this.mesh, false)[0];
+  }
 
-    if (this.pickMode === 'face' && hit.face) {
-      // 点到的三角形的法线是显示坐标，只需要逆旋转换回文件坐标（法线不受平移影响）
-      const n = hit.face.normal.clone().applyMatrix4(this.rotation.clone().invert()).normalize();
-      this.onFacePick([n.x, n.y, n.z]);
-      return;
+  /** 找出鼠标下面的那一片表面（朝向相近、相连的一组三角形） */
+  private pickPatch(e: PointerEvent): FacePatch | null {
+    const hit = this.raycast(e);
+    if (!hit || !hit.face || hit.faceIndex == null || !this.mesh) return null;
+    if (!this.faceData) {
+      const tris = toTriangleArray(this.mesh.geometry);
+      this.faceData = { tris, adjacency: buildAdjacency(tris) };
     }
+    // 双面渲染时可能点到三角形的背面（三角形朝向存反了），
+    // 这时把法线反过来，保证“看到的那一面”被放到平台上
+    const flip = hit.face.normal.dot(this.raycaster.ray.direction) > 0;
+    const { tris, adjacency } = this.faceData;
+    return findFacePatch(tris, adjacency, hit.faceIndex, this.facePatchAngle, flip);
+  }
 
-    if (this.measurePoints.length >= 2) this.clearMeasure(); // 第三下开始新的测量
-    this.measurePoints.push(hit.point.clone());
-    this.drawMeasure();
+  // 悬停高亮：鼠标移动很频繁，合并到下一帧只算一次；按着鼠标（在旋转视角）时不算
+  private handlePointerMove = (e: PointerEvent) => {
+    if (this.pickMode !== 'face' || e.buttons !== 0) return;
+    this.hoverEvent = e;
+    if (this.hoverFrame) return;
+    this.hoverFrame = requestAnimationFrame(() => {
+      this.hoverFrame = 0;
+      const ev = this.hoverEvent;
+      this.hoverEvent = null;
+      if (ev && this.pickMode === 'face') this.drawFacePatch(this.pickPatch(ev));
+    });
   };
+
+  private handlePointerLeave = () => {
+    this.hoverEvent = null;
+    disposeGroup(this.faceGroup);
+  };
+
+  private drawFacePatch(patch: FacePatch | null) {
+    disposeGroup(this.faceGroup);
+    if (!patch || !this.faceData) return;
+    const { tris } = this.faceData;
+    const positions = new Float32Array(patch.triangles.length * 9);
+    patch.triangles.forEach((t, k) => {
+      for (let j = 0; j < 9; j++) positions[k * 9 + j] = tris[t * 9 + j];
+    });
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffd34d,
+      transparent: true,
+      opacity: 0.6,
+      side: THREE.DoubleSide,
+      // 和模型表面重合，往前挪一点避免闪烁
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    this.faceGroup.add(new THREE.Mesh(geom, mat));
+  }
 
   private drawMeasure() {
     disposeGroup(this.measureGroup);
@@ -471,10 +548,14 @@ export class Viewer {
     const canvas = this.renderer.domElement;
     canvas.removeEventListener('pointerdown', this.handlePointerDown);
     canvas.removeEventListener('pointerup', this.handlePointerUp);
+    canvas.removeEventListener('pointermove', this.handlePointerMove);
+    canvas.removeEventListener('pointerleave', this.handlePointerLeave);
+    cancelAnimationFrame(this.hoverFrame);
     this.clearModel();
     disposeGroup(this.boundsGroup);
     disposeGroup(this.printerGroup);
     disposeGroup(this.measureGroup);
+    disposeGroup(this.faceGroup);
     disposeGroup(this.sliceGroup);
     this.grid.dispose();
     this.controls.dispose();
