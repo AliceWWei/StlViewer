@@ -1,14 +1,14 @@
 /**
  * 单位换算。STL 和 OBJ 文件里只有数字，没有单位，切片软件默认按毫米理解。
  * 如果模型是用英寸或米导出的，放进来就会小 25.4 倍或 1000 倍，这是很常见的坑。
- * 3MF 会在文件里写明单位，可以自动换算。
+ * 3MF 会在文件里写明单位，可以自动换算。界面上显示的单位名称在 i18n.ts 里。
  */
 export const UNITS = {
-  mm: { label: '毫米 mm', toMm: 1, threeMF: 'millimeter' },
-  cm: { label: '厘米 cm', toMm: 10, threeMF: 'centimeter' },
-  m: { label: '米 m', toMm: 1000, threeMF: 'meter' },
-  inch: { label: '英寸 inch', toMm: 25.4, threeMF: 'inch' },
-  um: { label: '微米 µm', toMm: 0.001, threeMF: 'micron' },
+  mm: { toMm: 1, threeMF: 'millimeter' },
+  cm: { toMm: 10, threeMF: 'centimeter' },
+  m: { toMm: 1000, threeMF: 'meter' },
+  inch: { toMm: 25.4, threeMF: 'inch' },
+  um: { toMm: 0.001, threeMF: 'micron' },
 } as const;
 
 export type UnitName = keyof typeof UNITS;
