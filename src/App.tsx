@@ -6,7 +6,19 @@ import { ModelLoadError, parseModel } from './viewer/loadModel';
 import { MESSAGES, useLang, type Lang, type Messages } from './i18n';
 import type { MeasureResult, ModelInfo, PickMode } from './viewer/Viewer';
 import { layerCount, sliceAt } from './viewer/slice';
-import { UNITS, suggestUnit, type UnitName } from './viewer/units';
+import {
+  DISPLAY_UNITS,
+  UNITS,
+  formatArea,
+  formatLength,
+  formatNumber,
+  formatSize,
+  formatVolume,
+  isDisplayUnit,
+  suggestUnit,
+  type DisplayUnit,
+  type UnitName,
+} from './viewer/units';
 import { isFacingDown } from './viewer/orient';
 import {
   MATERIALS,
@@ -65,8 +77,19 @@ function sampleGeometry() {
   return new THREE.TorusKnotGeometry(20, 6, 200, 32);
 }
 
-const fmt = (n: number, digits = 1) =>
-  n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const fmt = formatNumber;
+
+const DISPLAY_UNIT_KEY = 'stlviewer.displayUnit';
+
+function initialDisplayUnit(): DisplayUnit {
+  try {
+    const saved = localStorage.getItem(DISPLAY_UNIT_KEY);
+    if (isDisplayUnit(saved)) return saved;
+  } catch {
+    // localStorage 不可用时用默认值
+  }
+  return 'mm';
+}
 
 export default function App() {
   const { lang, setLang, t } = useLang();
@@ -74,7 +97,18 @@ export default function App() {
   // 文件解析出来的原始几何体（文件坐标，单位未知）
   const [source, setSource] = useState<THREE.BufferGeometry | null>(sampleGeometry);
   const [fileUnit, setFileUnit] = useState<UnitName | null>(null); // 文件自己声明的单位（3MF）
-  const [unit, setUnit] = useState<UnitName>('mm');
+  const [unit, setUnit] = useState<UnitName>('mm'); // 文件里的数字是什么单位
+  // 界面上用什么单位显示（只影响显示，内部计算都是毫米），记住用户的选择
+  const [displayUnit, setDisplayUnitState] = useState<DisplayUnit>(initialDisplayUnit);
+  const setDisplayUnit = (u: DisplayUnit) => {
+    setDisplayUnitState(u);
+    try {
+      localStorage.setItem(DISPLAY_UNIT_KEY, u);
+    } catch {
+      // 存不了就只在本次生效
+    }
+  };
+  const du = displayUnit;
   // 摆放朝向：每次“放平”都在这个旋转上再叠加一次
   const [orientation, setOrientation] = useState(() => new THREE.Quaternion());
   const [faceNotice, setFaceNotice] = useState(false); // 点到的面已经朝下
@@ -219,7 +253,6 @@ export default function App() {
     if (file) openFile(file);
   };
 
-  const volumeCm3 = analysis ? Math.abs(analysis.volume) / 1000 : 0;
   const grams = analysis
     ? estimateMaterialGrams(analysis.volume, analysis.area, MATERIALS[materialIndex].density, {
         infill: infill / 100,
@@ -243,6 +276,7 @@ export default function App() {
         onMeasure={setMeasure}
         onFacePick={onFacePick}
         slice={slice}
+        displayUnit={displayUnit}
       />
 
       {dragging && <div className="drop-overlay">{t.dropHint}</div>}
@@ -287,8 +321,8 @@ export default function App() {
           {info && (
             <>
               <dt>{t.triangles}</dt><dd>{info.triangles.toLocaleString()}</dd>
-              <dt>{t.sizeMm}</dt>
-              <dd>{fmt(info.size.x)} × {fmt(info.size.y)} × {fmt(info.size.z)}</dd>
+              <dt>{t.size}</dt>
+              <dd>{formatSize([info.size.x, info.size.y, info.size.z], du)}</dd>
             </>
           )}
         </dl>
@@ -307,7 +341,23 @@ export default function App() {
               ))}
             </select>
           </dd>
+          <dt>{t.displayUnit}</dt>
+          <dd>
+            <select
+              className="select inline"
+              value={displayUnit}
+              onChange={(e) => { if (isDisplayUnit(e.target.value)) setDisplayUnit(e.target.value); }}
+            >
+              {(Object.keys(DISPLAY_UNITS) as DisplayUnit[]).map((u) => (
+                <option key={u} value={u}>{t.displayUnitNames[u]}</option>
+              ))}
+            </select>
+          </dd>
         </dl>
+        {/* 把换算过程写出来：文件里的数字 × 单位 = 实际尺寸，避免“选了米数字反而变大”的困惑 */}
+        <p className="hint">
+          {t.unitConversion(fmt(rawMaxDim, 2), UNITS[unit].symbol, formatLength(rawMaxDim * UNITS[unit].toMm, du))}
+        </p>
         {fileUnit ? (
           <p className="hint">{t.unitDeclared(t.unitNames[fileUnit])}</p>
         ) : unitHint && unit === 'mm' ? (
@@ -316,8 +366,9 @@ export default function App() {
             <button className="link" onClick={() => setUnit(unitHint)}>{t.unitConvert(t.unitNames[unitHint])}</button>
           </p>
         ) : (
-          <p className="hint">{t.unitNone}</p>
+          unit === 'mm' && <p className="hint">{t.unitNone}</p>
         )}
+        <p className="hint">{t.unitExplain}</p>
 
         <h2>{t.placement}</h2>
         <div className="row">
@@ -355,8 +406,8 @@ export default function App() {
 
             <h2>{t.volumeMaterial}</h2>
             <dl>
-              <dt>{t.volume}</dt><dd>{fmt(volumeCm3, 2)} cm³{analysis.mesh.watertight ? '' : t.forReference}</dd>
-              <dt>{t.surfaceArea}</dt><dd>{fmt(analysis.area / 100, 2)} cm²</dd>
+              <dt>{t.volume}</dt><dd>{formatVolume(Math.abs(analysis.volume), du)}{analysis.mesh.watertight ? '' : t.forReference}</dd>
+              <dt>{t.surfaceArea}</dt><dd>{formatArea(analysis.area, du)}</dd>
               <dt>{t.material}</dt>
               <dd>
                 <select className="select inline" value={materialIndex} onChange={(e) => setMaterialIndex(+e.target.value)}>
@@ -378,7 +429,7 @@ export default function App() {
             <select className="select" value={printerIndex} onChange={(e) => setPrinterIndex(+e.target.value)}>
               <option value={-1}>{t.noPrinter}</option>
               {PRINTERS.map((p, i) => (
-                <option key={p.name} value={i}>{t.withDetail(p.name, p.build.join(' × '))}</option>
+                <option key={p.name} value={i}>{t.withDetail(p.name, formatSize(p.build, du))}</option>
               ))}
             </select>
             {fit && (fit.fits ? (
@@ -387,7 +438,7 @@ export default function App() {
               <p className="warn">
                 {t.doesNotFit}
                 {['X', 'Y', 'Z']
-                  .map((axis, i) => (fit.overflow[i] > 0 ? t.overflow(axis, fmt(fit.overflow[i])) : null))
+                  .map((axis, i) => (fit.overflow[i] > 0 ? t.overflow(axis, formatLength(fit.overflow[i], du)) : null))
                   .filter(Boolean)
                   .join(t.listSep)}
               </p>
@@ -405,7 +456,7 @@ export default function App() {
                   <input type="range" min={20} max={80} value={overhangAngle} onChange={(e) => setOverhangAngle(+e.target.value)} />
                   {overhangAngle}°
                 </dd>
-                <dt>{t.overhangArea}</dt><dd>{fmt((overhangArea ?? 0) / 100, 2)} cm²</dd>
+                <dt>{t.overhangArea}</dt><dd>{formatArea(overhangArea ?? 0, du)}</dd>
               </dl>
             )}
 
@@ -420,7 +471,8 @@ export default function App() {
                   <dt>{t.layerHeight}</dt>
                   <dd>
                     <select className="select inline" value={layerHeight} onChange={(e) => setLayerHeight(+e.target.value)}>
-                      {[0.1, 0.2, 0.3].map((h) => <option key={h} value={h}>{h} mm</option>)}
+                      {/* 层高是打印机设置，切片软件里一律用毫米，这里不跟着显示单位换算 */}
+                    {[0.1, 0.2, 0.3].map((h) => <option key={h} value={h}>{h} mm</option>)}
                     </select>
                   </dd>
                   <dt>{t.layer}</dt>
@@ -435,8 +487,8 @@ export default function App() {
                     />
                     {currentLayer} / {totalLayers}
                   </dd>
-                  <dt>{t.height}</dt><dd>{fmt(slice.height - analysis.bounds.min[2], 2)} mm</dd>
-                  <dt>{t.sectionArea}</dt><dd>{fmt(slice.area, 1)} mm²</dd>
+                  <dt>{t.height}</dt><dd>{formatLength(slice.height - analysis.bounds.min[2], du, du === 'mm' ? 2 : 3)}</dd>
+                  <dt>{t.sectionArea}</dt><dd>{formatArea(slice.area, du)}</dd>
                   <dt>{t.contours}</dt>
                   <dd>
                     {t.contourCounts(
@@ -464,9 +516,9 @@ export default function App() {
             {pickMode === 'measure' && (
               measure?.points === 2 ? (
                 <dl>
-                  <dt>{t.distance}</dt><dd>{fmt(measure.distance, 2)} mm</dd>
+                  <dt>{t.distance}</dt><dd>{formatLength(measure.distance, du, 2)}</dd>
                   <dt>ΔX / ΔY / ΔZ</dt>
-                  <dd>{measure.delta.map((d) => fmt(d, 2)).join(' / ')}</dd>
+                  <dd>{formatSize(measure.delta, du).replaceAll(' × ', ' / ')}</dd>
                 </dl>
               ) : (
                 <p className="hint">{measure?.points === 1 ? t.measureSecond : t.measureFirst}</p>

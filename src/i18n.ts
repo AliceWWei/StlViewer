@@ -4,7 +4,7 @@
  * 少写一个 key 或参数类型不对都会直接编译报错。
  */
 import { useCallback, useEffect, useState } from 'react';
-import type { UnitName } from './viewer/units';
+import type { DisplayUnit, UnitName } from './viewer/units';
 
 export type Lang = 'zh' | 'en';
 
@@ -35,11 +35,17 @@ const zh = {
   model: '模型',
   file: '文件',
   triangles: '三角形',
-  sizeMm: '尺寸 (mm)',
+  size: '尺寸',
   showBounds: '显示包围盒和尺寸',
 
   units: '单位',
-  fileUnit: '文件单位',
+  fileUnit: '文件里的数字单位',
+  displayUnit: '显示单位',
+  displayUnitNames: {
+    mm: '毫米 mm',
+    cm: '厘米 cm',
+    inch: '英寸 in',
+  } satisfies Record<DisplayUnit, string>,
   unitNames: {
     mm: '毫米 mm',
     cm: '厘米 cm',
@@ -47,10 +53,14 @@ const zh = {
     inch: '英寸 inch',
     um: '微米 µm',
   } satisfies Record<UnitName, string>,
-  unitDeclared: (unit: string) => `3MF 文件声明了单位：${unit}，已自动换算成毫米`,
-  unitSuspect: (mm: string, unit: string) => `按毫米算模型只有 ${mm} mm，可能是用${unit}导出的。`,
+  unitDeclared: (unit: string) => `3MF 文件声明了单位：${unit}，已自动换算`,
+  unitSuspect: (raw: string, unit: string) =>
+    `文件里模型的最大尺寸是 ${raw}，按毫米理解大小不太正常，可能是用${unit}导出的。`,
+  unitConversion: (raw: string, symbol: string, converted: string) =>
+    `最大尺寸：文件里的 ${raw} ${symbol} = ${converted}`,
+  unitExplain: '文件里的数字先按上面的单位换算，再按「显示单位」显示所有尺寸、面积和体积',
   unitConvert: (unit: string) => `按${unit}换算`,
-  unitNone: 'STL / OBJ 不带单位，默认按毫米理解',
+  unitNone: 'STL / OBJ 不带单位，默认按毫米理解，不对的话在上面改',
 
   placement: '摆放',
   pickFace: '选一个面放平',
@@ -81,7 +91,7 @@ const zh = {
   fits: '✓ 放得下',
   fitsRotated: '（需要在平台上转 90°）',
   doesNotFit: '✗ 放不下：',
-  overflow: (axis: string, mm: string) => `${axis} 超出 ${mm} mm`,
+  overflow: (axis: string, length: string) => `${axis} 超出 ${length}`,
   listSep: '，',
   /** 下拉选项“名称（补充说明）”，中文用全角括号 */
   withDetail: (name: string, detail: string) => `${name}（${detail}）`,
@@ -138,11 +148,17 @@ const en: Messages = {
   model: 'Model',
   file: 'File',
   triangles: 'Triangles',
-  sizeMm: 'Size (mm)',
+  size: 'Size',
   showBounds: 'Show bounding box and dimensions',
 
   units: 'Units',
-  fileUnit: 'File unit',
+  fileUnit: 'Units used in the file',
+  displayUnit: 'Display units',
+  displayUnitNames: {
+    mm: 'Millimeters (mm)',
+    cm: 'Centimeters (cm)',
+    inch: 'Inches (in)',
+  },
   unitNames: {
     mm: 'Millimeters (mm)',
     cm: 'Centimeters (cm)',
@@ -150,10 +166,13 @@ const en: Messages = {
     inch: 'Inches (inch)',
     um: 'Micrometers (µm)',
   },
-  unitDeclared: (unit) => `The 3MF file declares its unit: ${unit}, converted to millimeters automatically`,
-  unitSuspect: (mm, unit) => `Read as millimeters, the model is only ${mm} mm. It may have been exported in ${unit}.`,
+  unitDeclared: (unit) => `The 3MF file declares its unit: ${unit}, converted automatically`,
+  unitSuspect: (raw, unit) =>
+    `The largest size in the file is ${raw}, an unusual size if read as millimeters. It may have been exported in ${unit}.`,
+  unitConversion: (raw, symbol, converted) => `Largest size: ${raw} ${symbol} in the file = ${converted}`,
+  unitExplain: 'Numbers in the file are converted using the unit above; all sizes, areas and volumes are then shown in the display units',
   unitConvert: (unit) => `Convert from ${unit}`,
-  unitNone: 'STL / OBJ files carry no unit; millimeters are assumed',
+  unitNone: 'STL / OBJ files carry no unit; millimeters are assumed. Change it above if that is wrong',
 
   placement: 'Placement',
   pickFace: 'Pick a face to lay flat',
@@ -185,7 +204,7 @@ const en: Messages = {
   fits: '✓ Fits',
   fitsRotated: ' (rotate 90° on the bed)',
   doesNotFit: '✗ Does not fit: ',
-  overflow: (axis, mm) => `${axis} over by ${mm} mm`,
+  overflow: (axis, length) => `${axis} over by ${length}`,
   listSep: ', ',
   withDetail: (name, detail) => `${name} (${detail})`,
 

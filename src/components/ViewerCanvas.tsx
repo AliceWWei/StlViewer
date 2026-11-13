@@ -3,6 +3,7 @@ import type * as THREE from 'three';
 import { Viewer, type MeasureResult, type ModelInfo, type PickMode } from '../viewer/Viewer';
 import type { Contour } from '../viewer/slice';
 import type { Vec3 } from '../viewer/geometry';
+import type { DisplayUnit } from '../viewer/units';
 
 interface Props {
   geometry: THREE.BufferGeometry | null;
@@ -14,6 +15,7 @@ interface Props {
   onMeasure: (result: MeasureResult | null) => void;
   onFacePick: (normal: Vec3) => void;
   slice: { height: number; contours: Contour[] } | null;
+  displayUnit: DisplayUnit;
 }
 
 /**
@@ -22,7 +24,7 @@ interface Props {
  * - props 变化时调用 Viewer 对应的方法，渲染细节都留在 Viewer 里
  */
 export function ViewerCanvas(props: Props) {
-  const { geometry, onModelInfo, overhang, showBounds, printer, pickMode, onMeasure, onFacePick, slice } = props;
+  const { geometry, onModelInfo, overhang, showBounds, printer, pickMode, onMeasure, onFacePick, slice, displayUnit } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | null>(null);
 
@@ -48,6 +50,10 @@ export function ViewerCanvas(props: Props) {
       onModelInfo(viewerRef.current.setGeometry(geometry));
     }
   }, [geometry, onModelInfo]);
+
+  useEffect(() => {
+    viewerRef.current?.setDisplayUnit(displayUnit);
+  }, [displayUnit]);
 
   useEffect(() => {
     viewerRef.current?.setOverhang(overhang.enabled, overhang.maxAngle);

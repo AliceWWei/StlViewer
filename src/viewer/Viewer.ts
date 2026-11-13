@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { toTriangleArray, type Vec3 } from './geometry';
 import { buildAdjacency, findFacePatch, type Adjacency, type FacePatch } from './orient';
+import { formatLength, type DisplayUnit } from './units';
 import { pointInPolygon, type Contour } from './slice';
 
 export type PickMode = 'none' | 'measure' | 'face';
@@ -64,6 +65,8 @@ export class Viewer {
   };
 
   private showBounds = false;
+  private displayUnit: DisplayUnit = 'mm'; // 3D 标签（尺寸、距离）用什么单位显示
+  private printerBuild: Vec3 | null = null;
   private pickMode: PickMode = 'none';
   private measurePoints: THREE.Vector3[] = [];
   private pointerDown: { x: number; y: number } | null = null;
@@ -186,6 +189,7 @@ export class Viewer {
     this.scene.add(this.mesh);
 
     this.overhangUniforms.uBedEps.value = Math.max(0.05, this.viewSize.y * 1e-3);
+    this.rebuildGrid();
     this.rebuildBounds();
     this.clearMeasure();
     this.setSlice(null, []);
@@ -260,11 +264,20 @@ export class Viewer {
     // 在三条边的中点标注尺寸，数值用文件坐标（X 宽、Y 深、Z 高）
     const { min, max } = box;
     const s = this.modelSize;
+    const len = (mm: number) => formatLength(mm, this.displayUnit);
     this.boundsGroup.add(
-      makeLabel(`X ${s.x.toFixed(1)}`, new THREE.Vector3((min.x + max.x) / 2, min.y, max.z), 'dim'),
-      makeLabel(`Y ${s.y.toFixed(1)}`, new THREE.Vector3(max.x, min.y, (min.z + max.z) / 2), 'dim'),
-      makeLabel(`Z ${s.z.toFixed(1)}`, new THREE.Vector3(max.x, (min.y + max.y) / 2, max.z), 'dim'),
+      makeLabel(`X ${len(s.x)}`, new THREE.Vector3((min.x + max.x) / 2, min.y, max.z), 'dim'),
+      makeLabel(`Y ${len(s.y)}`, new THREE.Vector3(max.x, min.y, (min.z + max.z) / 2), 'dim'),
+      makeLabel(`Z ${len(s.z)}`, new THREE.Vector3(max.x, (min.y + max.y) / 2, max.z), 'dim'),
     );
+  }
+
+  /** 切换显示单位：只重画带数字的 3D 标签，几何和计算都还是毫米 */
+  setDisplayUnit(unit: DisplayUnit) {
+    if (unit === this.displayUnit) return;
+    this.displayUnit = unit;
+    this.rebuildBounds();
+    if (this.measurePoints.length > 0) this.drawMeasure();
   }
 
   // ───────────────────────── 打印机成型空间 ─────────────────────────
@@ -272,14 +285,10 @@ export class Viewer {
   /** 显示打印机的成型空间（build: 文件坐标 X×Y×Z），放得下画绿色，放不下画红色 */
   setPrinter(build: Vec3 | null, fits = true) {
     disposeGroup(this.printerGroup);
-    this.scene.remove(this.grid);
-    this.grid.dispose();
+    this.printerBuild = build;
+    this.rebuildGrid();
+    if (!build) return;
 
-    if (!build) {
-      this.grid = this.makeGrid(200);
-      this.scene.add(this.grid);
-      return;
-    }
     const [bx, by, bz] = build;
     // 文件坐标 (X, Y, Z) 对应显示坐标 (x, z, y)：高度 Z 变成显示里的 y
     const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(bx, bz, by));
@@ -289,13 +298,33 @@ export class Viewer {
     );
     lines.position.y = bz / 2;
     this.printerGroup.add(lines);
+  }
 
-    this.grid = this.makeGrid(Math.max(bx, by));
+  /**
+   * 平台网格：选了打印机就是打印机平台的大小；没选时至少 200 mm，
+   * 模型更大（比如按“米”换算后变成几米长）时跟着放大，否则模型下面只剩一个小方块。
+   */
+  private rebuildGrid() {
+    let size: number;
+    if (this.printerBuild) {
+      size = Math.max(this.printerBuild[0], this.printerBuild[1]);
+    } else {
+      const footprint = Math.max(this.viewSize.x, this.viewSize.z) * 1.5;
+      size = Math.max(200, niceCeil(footprint));
+    }
+    if (this.grid.userData.size === size) return;
+    this.scene.remove(this.grid);
+    this.grid.dispose();
+    this.grid = this.makeGrid(size);
     this.scene.add(this.grid);
   }
 
   private makeGrid(size: number) {
-    return new THREE.GridHelper(size, Math.max(1, Math.round(size / 10)), 0x666a75, 0x3a3d45);
+    // 格子数控制在 10~50 之间：小平台每格 10 mm，大模型格子跟着变大
+    const divisions = Math.min(50, Math.max(1, Math.round(size / 10)));
+    const grid = new THREE.GridHelper(size, divisions, 0x666a75, 0x3a3d45);
+    grid.userData.size = size;
+    return grid;
   }
 
   // ───────────────────────── 测量 ─────────────────────────
@@ -440,7 +469,11 @@ export class Viewer {
     const d = b.clone().sub(a);
     const distance = d.length();
     this.measureGroup.add(
-      makeLabel(`${distance.toFixed(2)} mm`, pts[0].clone().add(pts[1]).multiplyScalar(0.5), 'measure'),
+      makeLabel(
+        formatLength(distance, this.displayUnit, 2),
+        pts[0].clone().add(pts[1]).multiplyScalar(0.5),
+        'measure',
+      ),
     );
     this.onMeasure({ points: 2, distance, delta: [Math.abs(d.x), Math.abs(d.y), Math.abs(d.z)] });
   }
@@ -563,6 +596,14 @@ export class Viewer {
     canvas.remove();
     this.labelRenderer.domElement.remove();
   }
+}
+
+/** 向上取整到 1、2、5 × 10ⁿ，让网格大小是个整数 */
+function niceCeil(v: number) {
+  if (v <= 0) return 0;
+  const p = 10 ** Math.floor(Math.log10(v));
+  for (const m of [1, 2, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
 }
 
 function makeLabel(text: string, position: THREE.Vector3, kind: 'dim' | 'measure') {
