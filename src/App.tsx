@@ -1,8 +1,11 @@
 import { useCallback, useMemo, useState, type DragEvent } from 'react';
 import * as THREE from 'three';
 import { ViewerCanvas } from './components/ViewerCanvas';
+import { SliceCanvas } from './components/SliceCanvas';
 import { parseModel } from './viewer/loadModel';
-import type { MeasureResult, ModelInfo } from './viewer/Viewer';
+import type { MeasureResult, ModelInfo, PickMode } from './viewer/Viewer';
+import { layerCount, sliceAt } from './viewer/slice';
+import { UNITS, suggestUnit, type UnitName } from './viewer/units';
 import {
   MATERIALS,
   PRINTERS,
@@ -14,6 +17,7 @@ import {
   computeSurfaceArea,
   estimateMaterialGrams,
   toTriangleArray,
+  type Vec3,
 } from './viewer/geometry';
 
 // 放在 public/samples 里的示例模型。BASE_URL 在本地是 /，部署到 GitHub Pages 后是 /StlViewer/
@@ -23,6 +27,8 @@ const SAMPLES = [
   { file: 'teapot.stl', label: '犹他茶壶' },
   { file: 'vase.stl', label: '花瓶（单层曲面，不封闭）' },
   { file: 'box.stl', label: '长方体 20×10×30' },
+  { file: 'bracket.3mf', label: 'L 形支架（3MF，试试“放平”）' },
+  { file: 'gear-inch.stl', label: '齿轮（英寸单位导出的 STL）' },
 ];
 
 // 没有上传文件时先显示一个示例形状
@@ -34,7 +40,12 @@ const fmt = (n: number, digits = 1) =>
   n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 
 export default function App() {
-  const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(sampleGeometry);
+  // 文件解析出来的原始几何体（文件坐标，单位未知）
+  const [source, setSource] = useState<THREE.BufferGeometry | null>(sampleGeometry);
+  const [fileUnit, setFileUnit] = useState<UnitName | null>(null); // 文件自己声明的单位（3MF）
+  const [unit, setUnit] = useState<UnitName>('mm');
+  // 摆放朝向：每次“放平”都在这个旋转上再叠加一次
+  const [orientation, setOrientation] = useState(() => new THREE.Quaternion());
   const [fileName, setFileName] = useState('示例：环面纽结');
   const [info, setInfo] = useState<ModelInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,8 +59,30 @@ export default function App() {
   const [overhangOn, setOverhangOn] = useState(false);
   const [overhangAngle, setOverhangAngle] = useState(45);
   const [showBounds, setShowBounds] = useState(false);
-  const [measureMode, setMeasureMode] = useState(false);
+  const [pickMode, setPickMode] = useState<PickMode>('none');
   const [measure, setMeasure] = useState<MeasureResult | null>(null);
+  const [sliceOn, setSliceOn] = useState(false);
+  const [layerHeight, setLayerHeight] = useState(0.2);
+  const [layer, setLayer] = useState(1);
+
+  // 实际显示和分析用的几何体 = 原始几何体 × 单位换算 × 摆放旋转
+  const geometry = useMemo(() => {
+    if (!source) return null;
+    const g = source.clone();
+    const s = UNITS[unit].toMm;
+    if (s !== 1) g.scale(s, s, s);
+    g.applyQuaternion(orientation);
+    return g;
+  }, [source, unit, orientation]);
+
+  // 换模型时，把单位和朝向恢复默认
+  const loadGeometry = useCallback((g: THREE.BufferGeometry, declaredUnit: UnitName | null) => {
+    setSource(g);
+    setFileUnit(declaredUnit);
+    setUnit(declaredUnit ?? 'mm');
+    setOrientation(new THREE.Quaternion());
+    setPickMode('none');
+  }, []);
 
   // 几何分析只在换模型时算一次（Benchy 22 万个三角形也只要几百毫秒）
   const analysis = useMemo(() => {
@@ -86,12 +119,42 @@ export default function App() {
   const openFile = useCallback(async (file: File) => {
     setError(null);
     try {
-      setGeometry(await parseModel(file));
+      const parsed = await parseModel(file);
+      loadGeometry(parsed.geometry, parsed.unit);
       setFileName(file.name);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+  }, [loadGeometry]);
+
+  // 放平：把点到的面的法线 n 转到正下方 (0, 0, -1)，这个面就贴在平台上了
+  const onFacePick = useCallback((n: Vec3) => {
+    const turn = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(...n).normalize(),
+      new THREE.Vector3(0, 0, -1),
+    );
+    setOrientation((q) => turn.multiply(q));
+    setPickMode('none');
   }, []);
+
+  // 单位提示：按毫米理解时模型太小或太大，可能是用别的单位导出的
+  const rawMaxDim = useMemo(() => {
+    if (!source) return 0;
+    source.computeBoundingBox();
+    const s = source.boundingBox!.getSize(new THREE.Vector3());
+    return Math.max(s.x, s.y, s.z);
+  }, [source]);
+  const unitHint = fileUnit ? null : suggestUnit(rawMaxDim);
+
+  // 切片：取每一层的中间高度来切，和切片软件的做法一样，也能避开正好落在顶点上的情况
+  const modelHeight = analysis ? analysis.bounds.size[2] : 0;
+  const totalLayers = layerCount(modelHeight, layerHeight);
+  const currentLayer = Math.min(layer, totalLayers);
+  const slice = useMemo(() => {
+    if (!sliceOn || !analysis) return null;
+    const height = analysis.bounds.min[2] + Math.min(modelHeight, (currentLayer - 0.5) * layerHeight);
+    return { height, ...sliceAt(analysis.tris, height) };
+  }, [sliceOn, analysis, currentLayer, layerHeight, modelHeight]);
 
   const openSample = async (name: string) => {
     if (!name) return;
@@ -135,17 +198,19 @@ export default function App() {
         overhang={overhangProp}
         showBounds={showBounds}
         printer={printerProp}
-        measureMode={measureMode}
+        pickMode={pickMode}
         onMeasure={setMeasure}
+        onFacePick={onFacePick}
+        slice={slice}
       />
 
       <aside className="panel">
-        <h1>STL / OBJ Viewer</h1>
+        <h1>STL / OBJ / 3MF Viewer</h1>
         <label className="button">
           打开文件
           <input
             type="file"
-            accept=".stl,.obj"
+            accept=".stl,.obj,.3mf"
             hidden
             onChange={(e) => { const f = e.target.files?.[0]; if (f) openFile(f); }}
           />
@@ -176,6 +241,39 @@ export default function App() {
           <input type="checkbox" checked={showBounds} onChange={(e) => setShowBounds(e.target.checked)} />
           显示包围盒和尺寸
         </label>
+
+        <h2>单位</h2>
+        <dl>
+          <dt>文件单位</dt>
+          <dd>
+            <select className="select inline" value={unit} onChange={(e) => setUnit(e.target.value as UnitName)}>
+              {(Object.keys(UNITS) as UnitName[]).map((u) => (
+                <option key={u} value={u}>{UNITS[u].label}</option>
+              ))}
+            </select>
+          </dd>
+        </dl>
+        {fileUnit ? (
+          <p className="hint">3MF 文件声明了单位：{UNITS[fileUnit].label}，已自动换算成毫米</p>
+        ) : unitHint && unit === 'mm' ? (
+          <p className="warn">
+            按毫米算模型只有 {fmt(rawMaxDim, 2)} mm，可能是用{UNITS[unitHint].label}导出的。
+            <button className="link" onClick={() => setUnit(unitHint)}>按{UNITS[unitHint].label}换算</button>
+          </p>
+        ) : (
+          <p className="hint">STL / OBJ 不带单位，默认按毫米理解</p>
+        )}
+
+        <h2>摆放</h2>
+        <div className="row">
+          <button
+            className={`small ${pickMode === 'face' ? 'active' : ''}`}
+            onClick={() => setPickMode(pickMode === 'face' ? 'none' : 'face')}
+          >
+            {pickMode === 'face' ? '点击模型上的一个面…' : '选一个面放平'}
+          </button>
+          <button className="small" onClick={() => setOrientation(new THREE.Quaternion())}>恢复原始朝向</button>
+        </div>
 
         {analysis && (
           <>
@@ -247,12 +345,57 @@ export default function App() {
               </dl>
             )}
 
+            <h2>切片预览</h2>
+            <label className="check">
+              <input type="checkbox" checked={sliceOn} onChange={(e) => setSliceOn(e.target.checked)} />
+              逐层查看截面
+            </label>
+            {sliceOn && slice && (
+              <>
+                <dl>
+                  <dt>层高</dt>
+                  <dd>
+                    <select className="select inline" value={layerHeight} onChange={(e) => setLayerHeight(+e.target.value)}>
+                      {[0.1, 0.2, 0.3].map((h) => <option key={h} value={h}>{h} mm</option>)}
+                    </select>
+                  </dd>
+                  <dt>层</dt>
+                  <dd className="range">
+                    <input
+                      type="range"
+                      min={1}
+                      max={totalLayers}
+                      value={currentLayer}
+                      onChange={(e) => setLayer(+e.target.value)}
+                      style={{ width: 130 }}
+                    />
+                    {currentLayer} / {totalLayers}
+                  </dd>
+                  <dt>高度</dt><dd>{fmt(slice.height - analysis.bounds.min[2], 2)} mm</dd>
+                  <dt>截面面积</dt><dd>{fmt(slice.area, 1)} mm²</dd>
+                  <dt>轮廓</dt>
+                  <dd>
+                    {slice.contours.filter((c) => c.closed && c.depth % 2 === 0).length} 个实体，
+                    {slice.contours.filter((c) => c.closed && c.depth % 2 === 1).length} 个孔
+                  </dd>
+                </dl>
+                {slice.openContours > 0 && (
+                  <p className="warn">⚠ 有 {slice.openContours} 条轮廓没闭合（红色），说明这一层附近网格有破洞</p>
+                )}
+                <SliceCanvas contours={slice.contours} bounds={analysis.bounds} />
+              </>
+            )}
+
             <h2>测量</h2>
             <label className="check">
-              <input type="checkbox" checked={measureMode} onChange={(e) => setMeasureMode(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={pickMode === 'measure'}
+                onChange={(e) => setPickMode(e.target.checked ? 'measure' : 'none')}
+              />
               两点测距（点击模型表面）
             </label>
-            {measureMode && (
+            {pickMode === 'measure' && (
               measure?.points === 2 ? (
                 <dl>
                   <dt>距离</dt><dd>{fmt(measure.distance, 2)} mm</dd>

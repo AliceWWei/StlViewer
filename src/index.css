@@ -17,7 +17,7 @@ body {
 .viewer { position: absolute; inset: 0; }
 .panel {
   position: absolute; top: 16px; left: 16px;
-  width: min(280px, calc(100% - 32px));
+  width: min(300px, calc(100% - 32px));
   padding: 16px; border-radius: 10px;
   background: rgba(20, 21, 25, 0.85);
   backdrop-filter: blur(6px);
@@ -45,7 +45,7 @@ dd { margin: 0; word-break: break-all; }
 }
 .select.inline { width: auto; margin: 0; padding: 2px 4px; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; margin: 6px 0; }
-.range { display: flex; align-items: center; gap: 6px; }
+.range { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .range input { width: 100px; }
 .ok { color: #5ad17a; font-size: 13px; margin: 6px 0; }
 .warn { color: #ffb347; font-size: 13px; margin: 6px 0; }
@@ -55,3 +55,15 @@ dd { margin: 0; word-break: break-all; }
 }
 .label-dim { background: rgba(245, 197, 66, 0.9); color: #1e1f24; }
 .label-measure { background: rgba(255, 211, 77, 0.95); color: #1e1f24; font-size: 13px; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+button.small {
+  padding: 5px 10px; border-radius: 6px; border: 1px solid #3a3d45;
+  background: #2a2c33; color: #e6e6e6; font: inherit; font-size: 12px; cursor: pointer;
+}
+button.small:hover { background: #33363e; }
+button.small.active { background: #4f9dde; border-color: #4f9dde; color: #fff; }
+button.link {
+  background: none; border: none; padding: 0; margin-left: 4px; font: inherit;
+  color: #7cc0ff; text-decoration: underline; cursor: pointer;
+}
+.slice-canvas { display: block; margin: 8px 0; background: #16171b; border-radius: 6px; }

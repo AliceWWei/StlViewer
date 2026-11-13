@@ -1,4 +1,4 @@
-# STL / OBJ Viewer
+# STL / OBJ / 3MF Viewer
 
 A browser-based 3D model viewer for 3D-printing files, built with **React + TypeScript + Three.js (WebGL)**.
 
@@ -8,7 +8,8 @@ A browser-based 3D model viewer for 3D-printing files, built with **React + Type
 
 ## Features
 
-- Load **STL** (binary and ASCII) and **OBJ** files via file picker or drag-and-drop
+- Load **STL** (binary and ASCII), **OBJ** and **3MF** files via file picker or drag-and-drop
+- **Units**: 3MF's declared unit is applied automatically; STL/OBJ are assumed to be mm, with a hint when a model looks like it was exported in inches or metres
 - Orbit / zoom / pan camera controls with damping
 - Hemisphere + key/fill directional lighting, PBR material
 - Converts CAD **Z-up** coordinates to Three.js **Y-up**, centres the model and places it on the build plate
@@ -20,9 +21,13 @@ A browser-based 3D model viewer for 3D-printing files, built with **React + Type
   - Mesh health: open (hole) edges, non-manifold edges, degenerate triangles, watertight check
   - Printer build-volume check (Stratasys F170 / F370 and others), including "fits if rotated 90°"
   - Overhang highlighting in a custom shader with an adjustable support angle, plus total overhang area
+- **Slice preview**: plane/triangle intersection, segments joined into closed contours, hole detection by nesting depth, filled cross-section in 3D (clipping plane + cap) and a 2D top view, with layer height and layer slider
+- **Lay flat**: click a face to rotate it onto the build plate; overhang highlighting updates with the new orientation
 - **Point-to-point measurement** via raycasting, reported in the file's own coordinate system (ΔX / ΔY / ΔZ)
 
 ![analysis](docs/analysis.png)
+
+![slice preview](docs/slice.png)
 
 ## Architecture
 
@@ -31,8 +36,10 @@ src/
 ├── viewer/
 │   ├── Viewer.ts      # Framework-agnostic Three.js viewer (scene, camera, lights, overhang shader, measuring, disposal)
 │   ├── geometry.ts    # Pure geometry: volume, area, mesh check, overhang area, material estimate, printer fit
-│   ├── geometry.test.ts  # Vitest unit tests
-│   └── loadModel.ts   # File → BufferGeometry parsing (STL / OBJ, OBJ meshes merged)
+│   ├── slice.ts       # Slicing: plane intersection, contour joining, nesting, shoelace area
+│   ├── units.ts       # Unit conversion and "is this really mm?" heuristic
+│   ├── loadModel.ts   # STL / OBJ / 3MF parsing (3MF unit read from the model XML)
+│   ├── *.test.ts      # Vitest unit tests
 ├── components/
 │   └── ViewerCanvas.tsx  # Thin React wrapper: mounts/disposes the Viewer, pushes new geometry
 └── App.tsx            # UI: file input, drag-and-drop, model info panel
@@ -49,7 +56,7 @@ npm test         # unit tests (Vitest)
 npm run build    # production build in dist/
 ```
 
-Sample models (3DBenchy, gear, teapot, vase, box) are in `public/samples/` and can be opened from the dropdown in the app. See `public/samples/README.md` for sources and licenses.
+Sample models (3DBenchy, gear, teapot, vase, box, an L bracket in 3MF and a gear exported in inches) are in `public/samples/` and can be opened from the dropdown in the app. See `public/samples/README.md` for sources and licenses.
 
 ## Roadmap
 
@@ -58,10 +65,12 @@ Sample models (3DBenchy, gear, teapot, vase, box) are in `public/samples/` and c
 - [x] Volume calculation (signed tetrahedron method) and print-material estimate
 - [x] Overhang / support analysis
 - [x] Unit tests (Vitest) for geometry utilities
-- [ ] Slice preview (cross-section at a given Z height)
-- [ ] Lay a selected face flat on the build plate
-- [ ] mm / inch unit switch
+- [x] Slice preview (cross-section at a given Z height)
+- [x] Lay a selected face flat on the build plate
+- [x] mm / inch unit switch
+- [x] 3MF support
 - [ ] Electron desktop packaging
+- [ ] End-to-end tests (Playwright) in CI
 
 ## Tech stack
 

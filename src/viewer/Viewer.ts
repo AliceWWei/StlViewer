@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import type { Vec3 } from './geometry';
+import { pointInPolygon, type Contour } from './slice';
+
+export type PickMode = 'none' | 'measure' | 'face';
 
 export interface ModelInfo {
   triangles: number;
@@ -46,6 +49,10 @@ export class Viewer {
   private boundsGroup = new THREE.Group();
   private printerGroup = new THREE.Group();
   private measureGroup = new THREE.Group();
+  private sliceGroup = new THREE.Group();
+  /** 切片预览用的裁剪平面：只保留 y ≤ 切片高度 的部分 */
+  private clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
+  private rotation = new THREE.Matrix4(); // 只含 Z 朝上 → Y 朝上 的旋转
 
   // 悬垂高亮的 shader 参数，所有材质共用同一份 uniforms，改数值不用重新编译
   private overhangUniforms = {
@@ -55,12 +62,14 @@ export class Viewer {
   };
 
   private showBounds = false;
-  private measureMode = false;
+  private pickMode: PickMode = 'none';
   private measurePoints: THREE.Vector3[] = [];
   private pointerDown: { x: number; y: number } | null = null;
   private raycaster = new THREE.Raycaster();
 
   onMeasure: (result: MeasureResult | null) => void = () => {};
+  /** “放平”模式下点到的面，法线是文件坐标 */
+  onFacePick: (normal: Vec3) => void = () => {};
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -70,6 +79,7 @@ export class Viewer {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setSize(w, h);
+    this.renderer.localClippingEnabled = true; // 允许单个材质使用裁剪平面
     container.appendChild(this.renderer.domElement);
 
     // 文字标签（尺寸、距离）用 HTML 元素叠加在画布上，每帧按 3D 位置投影到屏幕
@@ -100,7 +110,7 @@ export class Viewer {
 
     // 打印平台网格，选了打印机之后会换成打印机平台的大小
     this.grid = this.makeGrid(200);
-    this.scene.add(this.grid, this.boundsGroup, this.printerGroup, this.measureGroup);
+    this.scene.add(this.grid, this.boundsGroup, this.printerGroup, this.measureGroup, this.sliceGroup);
 
     // 4. 轨道控制：鼠标左键旋转、滚轮缩放、右键平移
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -133,6 +143,7 @@ export class Viewer {
     // 绕 X 轴转 -90° 把模型“立起来”
     const rotation = new THREE.Matrix4();
     if (zUp) rotation.makeRotationX(-Math.PI / 2);
+    this.rotation.copy(rotation);
     geometry.applyMatrix4(rotation);
 
     // STL 文件经常不带法线或法线不可靠，重新计算保证光照正确
@@ -164,6 +175,7 @@ export class Viewer {
     this.overhangUniforms.uBedEps.value = Math.max(0.05, this.viewSize.y * 1e-3);
     this.rebuildBounds();
     this.clearMeasure();
+    this.setSlice(null, []);
     this.frameModel(this.viewSize);
 
     const pos = geometry.getAttribute('position');
@@ -275,10 +287,11 @@ export class Viewer {
 
   // ───────────────────────── 测量 ─────────────────────────
 
-  setMeasureMode(on: boolean) {
-    this.measureMode = on;
-    this.renderer.domElement.style.cursor = on ? 'crosshair' : '';
-    if (!on) this.clearMeasure();
+  /** 点击模型时做什么：测量取点，或者选一个面放平 */
+  setPickMode(mode: PickMode) {
+    this.pickMode = mode;
+    this.renderer.domElement.style.cursor = mode === 'none' ? '' : 'crosshair';
+    if (mode !== 'measure') this.clearMeasure();
   }
 
   clearMeasure() {
@@ -294,7 +307,7 @@ export class Viewer {
   private handlePointerUp = (e: PointerEvent) => {
     const down = this.pointerDown;
     this.pointerDown = null;
-    if (!this.measureMode || !this.mesh || !down || e.button !== 0) return;
+    if (this.pickMode === 'none' || !this.mesh || !down || e.button !== 0) return;
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) return; // 是拖拽，不是点击
 
     // 射线拾取：把鼠标位置换成 -1~1 的标准化坐标，从相机穿过这个点发一条射线
@@ -306,6 +319,13 @@ export class Viewer {
     this.raycaster.setFromCamera(ndc, this.camera);
     const hit = this.raycaster.intersectObject(this.mesh, false)[0];
     if (!hit) return;
+
+    if (this.pickMode === 'face' && hit.face) {
+      // 点到的三角形的法线是显示坐标，只需要逆旋转换回文件坐标（法线不受平移影响）
+      const n = hit.face.normal.clone().applyMatrix4(this.rotation.clone().invert()).normalize();
+      this.onFacePick([n.x, n.y, n.z]);
+      return;
+    }
 
     if (this.measurePoints.length >= 2) this.clearMeasure(); // 第三下开始新的测量
     this.measurePoints.push(hit.point.clone());
@@ -346,6 +366,60 @@ export class Viewer {
       makeLabel(`${distance.toFixed(2)} mm`, pts[0].clone().add(pts[1]).multiplyScalar(0.5), 'measure'),
     );
     this.onMeasure({ points: 2, distance, delta: [Math.abs(d.x), Math.abs(d.y), Math.abs(d.z)] });
+  }
+
+  // ───────────────────────── 切片预览 ─────────────────────────
+
+  /**
+   * 显示切片：用裁剪平面把切片高度以上的部分“切掉”，
+   * 再在切口处画出截面（实体部分填色，轮廓描边，没闭合的轮廓画成红色）。
+   * height 是文件坐标里的 Z 值，contours 由 slice.ts 算好传进来。
+   */
+  setSlice(height: number | null, contours: Contour[]) {
+    disposeGroup(this.sliceGroup);
+    const material = this.mesh?.material as THREE.MeshStandardMaterial | undefined;
+    if (height === null || !this.mesh) {
+      if (material) material.clippingPlanes = [];
+      return;
+    }
+    const viewY = new THREE.Vector3(0, 0, height).applyMatrix4(this.fileToView).y;
+    this.clipPlane.constant = viewY;
+    if (material) material.clippingPlanes = [this.clipPlane];
+
+    // 截面填色：每个实体轮廓（偶数深度）做成一个 Shape，直接套在它里面的孔作为 holes
+    const solids = contours.filter((c) => c.closed && c.depth % 2 === 0);
+    const holes = contours.filter((c) => c.closed && c.depth % 2 === 1);
+    const shapes = solids.map((c) => {
+      const shape = new THREE.Shape(c.points.map(([x, y]) => new THREE.Vector2(x, y)));
+      for (const h of holes) {
+        if (h.depth === c.depth + 1 && h.area < c.area && pointInPolygon(h.points[0], c.points)) {
+          shape.holes.push(new THREE.Path(h.points.map(([x, y]) => new THREE.Vector2(x, y))));
+        }
+      }
+      return shape;
+    });
+    // 轮廓点在文件坐标的 XY 平面上，先放到 z = height，再用和模型一样的变换转到显示坐标
+    const place = new THREE.Matrix4().multiplyMatrices(
+      this.fileToView,
+      new THREE.Matrix4().makeTranslation(0, 0, height),
+    );
+    if (shapes.length > 0) {
+      const cap = new THREE.Mesh(
+        new THREE.ShapeGeometry(shapes),
+        new THREE.MeshBasicMaterial({ color: 0xf08a3c, side: THREE.DoubleSide }),
+      );
+      cap.geometry.applyMatrix4(place);
+      this.sliceGroup.add(cap);
+    }
+
+    for (const c of contours) {
+      const pts = c.points.map(([x, y]) => new THREE.Vector3(x, y, 0).applyMatrix4(place));
+      const geom = new THREE.BufferGeometry().setFromPoints(pts);
+      const mat = new THREE.LineBasicMaterial({ color: c.closed ? 0xffe0b0 : 0xff3b30, depthTest: false });
+      const line = c.closed ? new THREE.LineLoop(geom, mat) : new THREE.Line(geom, mat);
+      line.renderOrder = 998;
+      this.sliceGroup.add(line);
+    }
   }
 
   // ───────────────────────── 相机和生命周期 ─────────────────────────
@@ -401,6 +475,7 @@ export class Viewer {
     disposeGroup(this.boundsGroup);
     disposeGroup(this.printerGroup);
     disposeGroup(this.measureGroup);
+    disposeGroup(this.sliceGroup);
     this.grid.dispose();
     this.controls.dispose();
     this.renderer.dispose();

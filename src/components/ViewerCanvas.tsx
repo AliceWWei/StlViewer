@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type * as THREE from 'three';
-import { Viewer, type MeasureResult, type ModelInfo } from '../viewer/Viewer';
+import { Viewer, type MeasureResult, type ModelInfo, type PickMode } from '../viewer/Viewer';
+import type { Contour } from '../viewer/slice';
 import type { Vec3 } from '../viewer/geometry';
 
 interface Props {
@@ -9,8 +10,10 @@ interface Props {
   overhang: { enabled: boolean; maxAngle: number };
   showBounds: boolean;
   printer: { build: Vec3; fits: boolean } | null;
-  measureMode: boolean;
+  pickMode: PickMode;
   onMeasure: (result: MeasureResult | null) => void;
+  onFacePick: (normal: Vec3) => void;
+  slice: { height: number; contours: Contour[] } | null;
 }
 
 /**
@@ -19,7 +22,7 @@ interface Props {
  * - props 变化时调用 Viewer 对应的方法，渲染细节都留在 Viewer 里
  */
 export function ViewerCanvas(props: Props) {
-  const { geometry, onModelInfo, overhang, showBounds, printer, measureMode, onMeasure } = props;
+  const { geometry, onModelInfo, overhang, showBounds, printer, pickMode, onMeasure, onFacePick, slice } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | null>(null);
 
@@ -35,6 +38,10 @@ export function ViewerCanvas(props: Props) {
   useEffect(() => {
     if (viewerRef.current) viewerRef.current.onMeasure = onMeasure;
   }, [onMeasure]);
+
+  useEffect(() => {
+    if (viewerRef.current) viewerRef.current.onFacePick = onFacePick;
+  }, [onFacePick]);
 
   useEffect(() => {
     if (geometry && viewerRef.current) {
@@ -57,8 +64,13 @@ export function ViewerCanvas(props: Props) {
   }, [build, fits]);
 
   useEffect(() => {
-    viewerRef.current?.setMeasureMode(measureMode);
-  }, [measureMode]);
+    viewerRef.current?.setPickMode(pickMode);
+  }, [pickMode]);
+
+  // 放在 geometry 的 effect 后面：换模型时 setGeometry 会清掉切片，这里再按当前状态画上
+  useEffect(() => {
+    viewerRef.current?.setSlice(slice?.height ?? null, slice?.contours ?? []);
+  }, [slice, geometry]);
 
   // 按 Esc 清除测量
   useEffect(() => {
