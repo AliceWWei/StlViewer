@@ -37,7 +37,7 @@ npm run dev      # http://localhost:5173
 npm run build    # production build in dist/
 ```
 
-A sample model is included at `public/samples/box.stl`.
+Sample models (3DBenchy, gear, teapot, vase, box) are in `public/samples/` and can be opened from the dropdown in the app. See `public/samples/README.md` for sources and licenses.
 
 ## Roadmap
 
