@@ -42,7 +42,9 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `npx vite build --base / --outDir dist-e2e && npx vite preview --outDir dist-e2e --port ${PORT} --strictPort`,
+    command: `npx vite build --outDir dist-e2e && npx vite preview --outDir dist-e2e --port ${PORT} --strictPort`,
+    // build 和 preview 都要用根路径；否则在 GitHub Actions 里会用 /StlViewer/，资源全部 404
+    env: { VITE_BASE: '/' },
     url: `http://localhost:${PORT}/`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
