@@ -7,6 +7,8 @@ import { MESSAGES, useLang, type Lang, type Messages } from './i18n';
 import type { MeasureResult, ModelInfo, PickMode } from './viewer/Viewer';
 import { layerCount, sliceAt } from './viewer/slice';
 import { repairMesh, toBinarySTL, type RepairReport } from './viewer/repair';
+import { summarizeThickness, thicknessColor } from './viewer/thickness';
+import { runThickness } from './viewer/runThickness';
 import {
   DISPLAY_UNITS,
   UNITS,
@@ -84,6 +86,9 @@ const fmt = formatNumber;
 
 const DISPLAY_UNIT_KEY = 'stlviewer.displayUnit';
 
+/** 壁厚分析时射线最远走多远：比这更厚的地方都算“够厚”。滑块最大 3 mm，热力图到 3 倍阈值就全绿了 */
+const MAX_THICKNESS_MM = 10;
+
 function initialDisplayUnit(): DisplayUnit {
   try {
     const saved = localStorage.getItem(DISPLAY_UNIT_KEY);
@@ -121,6 +126,14 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [repairReport, setRepairReport] = useState<RepairReport | null>(null);
+
+  // 壁厚分析
+  const [thicknessOn, setThicknessOn] = useState(false);
+  const [minWall, setMinWall] = useState(0.8); // 毫米：0.4 mm 喷嘴打两条线
+  const [thicknessMode, setThicknessMode] = useState<'heatmap' | 'passFail'>('heatmap');
+  // 结果和算它用的几何体放在一起，换模型后旧结果自动作废
+  const [thicknessResult, setThicknessResult] = useState<{ source: THREE.BufferGeometry; values: Float32Array } | null>(null);
+  const [thicknessProgress, setThicknessProgress] = useState(0);
 
   // 分析选项
   const [materialIndex, setMaterialIndex] = useState(0);
@@ -175,6 +188,40 @@ export default function App() {
     () => (analysis && overhangOn ? computeOverhangArea(analysis.tris, overhangAngle) : null),
     [analysis, overhangOn, overhangAngle],
   );
+
+  // 壁厚在文件坐标上算（旋转不改变厚度），换单位、放平都不用重算，乘上单位换算就是毫米
+  useEffect(() => {
+    if (!thicknessOn || !source) return;
+    if (thicknessResult?.source === source) return;
+    setThicknessProgress(0);
+    const toMm = UNITS[unit].toMm;
+    return runThickness(
+      toTriangleArray(source),
+      MAX_THICKNESS_MM / toMm,
+      setThicknessProgress,
+      (values) => setThicknessResult({ source, values }),
+    );
+    // unit 只用来换算射线的最远距离，变了不需要重算
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thicknessOn, source, thicknessResult]);
+
+  const thicknessMm = useMemo(() => {
+    if (!thicknessOn || !thicknessResult || thicknessResult.source !== source) return null;
+    const toMm = UNITS[unit].toMm;
+    return toMm === 1 ? thicknessResult.values : thicknessResult.values.map((v) => v * toMm);
+  }, [thicknessOn, thicknessResult, source, unit]);
+
+  const thicknessSummary = useMemo(
+    () => (thicknessMm && analysis ? summarizeThickness(analysis.tris, thicknessMm, minWall) : null),
+    [thicknessMm, analysis, minWall],
+  );
+
+  const faceColors = useMemo(() => {
+    if (!thicknessMm) return null;
+    const colors = new Float32Array(thicknessMm.length * 3);
+    thicknessMm.forEach((v, f) => colors.set(thicknessColor(v, minWall, thicknessMode), f * 3));
+    return colors;
+  }, [thicknessMm, minWall, thicknessMode]);
 
   const printer = printerIndex >= 0 ? PRINTERS[printerIndex] : null;
   const fit = printer && analysis ? checkFit(analysis.bounds.size, printer.build) : null;
@@ -325,6 +372,7 @@ export default function App() {
         onFacePick={onFacePick}
         slice={slice}
         displayUnit={displayUnit}
+        faceColors={faceColors}
       />
 
       {dragging && <div className="drop-overlay">{t.dropHint}</div>}
@@ -518,6 +566,77 @@ export default function App() {
               </dl>
             )}
 
+            <h2>{t.wallThickness}</h2>
+            <label className="check">
+              <input type="checkbox" checked={thicknessOn} onChange={(e) => setThicknessOn(e.target.checked)} />
+              {t.analyzeThickness}
+            </label>
+            {thicknessOn && (
+              <>
+                <dl>
+                  <dt>{t.minWall}</dt>
+                  <dd className="range">
+                    <input
+                      type="range"
+                      aria-label={t.minWall}
+                      min={0.2}
+                      max={3}
+                      step={0.1}
+                      value={minWall}
+                      onChange={(e) => setMinWall(+e.target.value)}
+                    />
+                    {formatLength(minWall, du)}
+                  </dd>
+                  <dt>{t.thicknessView}</dt>
+                  <dd>
+                    <select
+                      className="select inline"
+                      value={thicknessMode}
+                      onChange={(e) => setThicknessMode(e.target.value as 'heatmap' | 'passFail')}
+                    >
+                      <option value="heatmap">{t.heatmap}</option>
+                      <option value="passFail">{t.passFail}</option>
+                    </select>
+                  </dd>
+                </dl>
+                {!thicknessSummary ? (
+                  <p className="hint">{t.analyzing(Math.round(thicknessProgress * 100))}</p>
+                ) : (
+                  <>
+                    <ThicknessLegend minWall={minWall} mode={thicknessMode} du={du} t={t} />
+                    <dl>
+                      <dt>{t.thinnest}</dt>
+                      <dd>
+                        {Number.isNaN(thicknessSummary.min)
+                          ? '–'
+                          : thicknessSummary.min === Infinity
+                            ? `> ${formatLength(MAX_THICKNESS_MM, du)}`
+                            : formatLength(thicknessSummary.min, du)}
+                      </dd>
+                      <dt>{t.thinArea}</dt>
+                      <dd>
+                        {formatArea(thicknessSummary.thinArea, du)}
+                        {analysis.area > 0 ? ` (${fmt((thicknessSummary.thinArea / analysis.area) * 100, 1)}%)` : ''}
+                      </dd>
+                      {thicknessSummary.unmeasured > 0 && (
+                        <>
+                          <dt>{t.unmeasured}</dt>
+                          <dd>{thicknessSummary.unmeasured.toLocaleString()}</dd>
+                        </>
+                      )}
+                    </dl>
+                    {!analysis.mesh.watertight && <p className="warn">{t.thicknessOpenMesh}</p>}
+                    {Number.isNaN(thicknessSummary.min) ? null : thicknessSummary.thinArea > 0 ? (
+                      <p className="warn">{t.thinWarning(formatLength(minWall, du))}</p>
+                    ) : (
+                      <p className="ok">{t.thickEnough}</p>
+                    )}
+                  </>
+                )}
+                <p className="hint">{t.thicknessExplain}</p>
+              </>
+            )}
+
             <h2>{t.slicePreview}</h2>
             <label className="check">
               <input type="checkbox" checked={sliceOn} onChange={(e) => setSliceOn(e.target.checked)} />
@@ -612,6 +731,25 @@ function RepairSummary({ report: r, t }: { report: RepairReport; t: Messages }) 
       )}
       {r.skippedHoles > 0 && <p className="warn">{t.repairSkipped(n(r.skippedHoles))}</p>}
       <p className="hint">{t.repairWelded(n(r.originalVertices), n(r.weldedVertices))}</p>
+    </div>
+  );
+}
+
+/** 壁厚颜色图例：红 = 太薄，橙到绿 = 从勉强够到很厚，灰 = 没测到 */
+function ThicknessLegend({ minWall, mode, du, t }: { minWall: number; mode: 'heatmap' | 'passFail'; du: DisplayUnit; t: Messages }) {
+  const css = (c: [number, number, number]) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
+  const stops = mode === 'heatmap' ? [0, 0.25, 0.5, 0.75, 1].map((s) => minWall + s * 2 * minWall) : [minWall];
+  return (
+    <div className="legend">
+      <span className="swatch" style={{ background: css(thicknessColor(0, minWall, mode)) }} />
+      <span>&lt; {formatLength(minWall, du)}</span>
+      <span
+        className="bar"
+        style={{ background: `linear-gradient(to right, ${stops.map((v) => css(thicknessColor(v, minWall, mode))).join(', ')})` }}
+      />
+      <span>{mode === 'heatmap' ? `≥ ${formatLength(3 * minWall, du)}` : t.thickEnoughShort}</span>
+      <span className="swatch" style={{ background: css(thicknessColor(NaN, minWall, mode)) }} />
+      <span>{t.unmeasuredShort}</span>
     </div>
   );
 }

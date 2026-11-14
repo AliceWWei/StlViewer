@@ -115,3 +115,13 @@ test('the native menu follows the app language', async ({ launch }) => {
   await page.getByRole('button', { name: 'Switch to English' }).click();
   await expect.poll(menuLabels).toEqual(['File', 'View', 'Help']);
 });
+
+test('wall thickness runs in the packaged app (worker loads from file://)', async ({ launch }) => {
+  const { page } = await launch(samplePath('prusa-fan-shroud.stl'));
+  await expect(field(page, 'File')).toHaveText('prusa-fan-shroud.stl', { timeout: 30_000 });
+  if ((await page.locator('html').getAttribute('lang')) !== 'en') {
+    await page.getByRole('button', { name: 'Switch to English' }).click();
+  }
+  await page.getByLabel('Analyze wall thickness (mark thin areas)').check();
+  await expect(field(page, 'Thin area')).toHaveText(/mm²/, { timeout: 30_000 });
+});

@@ -16,6 +16,8 @@ interface Props {
   onFacePick: (normal: Vec3) => void;
   slice: { height: number; contours: Contour[] } | null;
   displayUnit: DisplayUnit;
+  /** 每个三角形的颜色（壁厚热力图），null = 不上色 */
+  faceColors: Float32Array | null;
 }
 
 /**
@@ -24,7 +26,7 @@ interface Props {
  * - props 变化时调用 Viewer 对应的方法，渲染细节都留在 Viewer 里
  */
 export function ViewerCanvas(props: Props) {
-  const { geometry, onModelInfo, overhang, showBounds, printer, pickMode, onMeasure, onFacePick, slice, displayUnit } = props;
+  const { geometry, onModelInfo, overhang, showBounds, printer, pickMode, onMeasure, onFacePick, slice, displayUnit, faceColors } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | null>(null);
 
@@ -77,6 +79,11 @@ export function ViewerCanvas(props: Props) {
   useEffect(() => {
     viewerRef.current?.setSlice(slice?.height ?? null, slice?.contours ?? []);
   }, [slice, geometry]);
+
+  // 放在 geometry 的 effect 后面：换模型后再按当前结果上色
+  useEffect(() => {
+    viewerRef.current?.setFaceColors(faceColors);
+  }, [faceColors, geometry]);
 
   // 按 Esc 清除测量
   useEffect(() => {

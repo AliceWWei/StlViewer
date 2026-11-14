@@ -248,6 +248,45 @@ export class Viewer {
     this.overhangUniforms.uOverhangSin.value = Math.sin(THREE.MathUtils.degToRad(maxAngleDeg));
   }
 
+  // ───────────────────────── 按面上色（壁厚热力图） ─────────────────────────
+
+  /**
+   * 给每个三角形一个颜色（每个三角形 3 个数字 RGB），null 表示恢复原来的蓝色。
+   * 做法是加一个“顶点颜色”属性：一个三角形的 3 个顶点都用同一个颜色，整个面就是这个颜色。
+   * 带索引的几何体（顶点被几个三角形共用）没法每个面单独上色，先展开成不共用顶点的。
+   */
+  setFaceColors(colors: Float32Array | null) {
+    if (!this.mesh) return;
+    const material = this.mesh.material as THREE.MeshStandardMaterial;
+    if (!colors) {
+      if (material.vertexColors) {
+        material.vertexColors = false;
+        material.color.set(0x4f9dde);
+        material.needsUpdate = true;
+      }
+      return;
+    }
+    let geometry = this.mesh.geometry;
+    if (geometry.index) {
+      const flat = geometry.toNonIndexed();
+      flat.computeVertexNormals();
+      geometry.dispose();
+      this.mesh.geometry = geometry = flat;
+    }
+    const triangles = geometry.getAttribute('position').count / 3;
+    if (colors.length !== triangles * 3) return; // 和当前模型对不上（比如模型刚换），不画
+    const perVertex = new Float32Array(triangles * 9);
+    for (let f = 0; f < triangles; f++) {
+      for (let v = 0; v < 3; v++) perVertex.set(colors.subarray(f * 3, f * 3 + 3), f * 9 + v * 3);
+    }
+    geometry.setAttribute('color', new THREE.BufferAttribute(perVertex, 3));
+    if (!material.vertexColors) {
+      material.vertexColors = true;
+      material.color.set(0xffffff); // 顶点颜色会乘上材质颜色，白色才能显示原色
+      material.needsUpdate = true;
+    }
+  }
+
   // ───────────────────────── 包围盒 ─────────────────────────
 
   setShowBounds(show: boolean) {

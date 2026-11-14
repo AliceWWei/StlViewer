@@ -75,36 +75,40 @@ export function computeThickness(tris: ArrayLike<number>, options: ThicknessOpti
     origin[0] = cx; origin[1] = cy; origin[2] = cz;
 
     depths.length = 0;
-    let escaped = 0;
     for (const [lx, ly, lz] of local) {
       dir[0] = lx * ux + ly * vx + lz * nx;
       dir[1] = lx * uy + ly * vy + lz * ny;
       dir[2] = lx * uz + ly * vz + lz * nz;
-      const hit = raycast(bvh, origin, dir, f, maxDistance / lz);
-      if (!hit) {
-        escaped++;
-        continue;
+      let d = exitDistance(bvh, origin, dir, f, maxDistance / lz);
+      if (d === Infinity && maxDistance !== Infinity) {
+        // 在上限之内没打中：可能是“比上限还厚”，也可能射线从破洞射出去了（不封闭的模型）。
+        // 不设上限再打一次，确实能从里面穿出去才算“很厚”
+        if (Number.isNaN(exitDistance(bvh, origin, dir, f, Infinity))) d = NaN;
       }
-      if (hit.t < 1e-9) continue;
-      // 打到的面的法线要和射线同向（射线从模型里面穿出去）
-      const h = hit.triangle * 9;
-      const f1x = t[h + 3] - t[h], f1y = t[h + 4] - t[h + 1], f1z = t[h + 5] - t[h + 2];
-      const f2x = t[h + 6] - t[h], f2y = t[h + 7] - t[h + 1], f2z = t[h + 8] - t[h + 2];
-      const hx = f1y * f2z - f1z * f2y, hy = f1z * f2x - f1x * f2z, hz = f1x * f2y - f1y * f2x;
-      if (hx * dir[0] + hy * dir[1] + hz * dir[2] <= 0) continue;
-      depths.push(hit.t * lz); // lz = cosθ：投影到法线方向的深度
+      if (!Number.isNaN(d)) depths.push(d * lz); // lz = cosθ：投影到法线方向的深度
     }
-    if (maxDistance === Infinity) {
-      out[f] = depths.length ? median(depths) : NaN;
-    } else {
-      // 有距离上限时，没打中可能只是“比上限还厚”。把它们当作 Infinity 一起取中位数
-      for (let k = 0; k < escaped; k++) depths.push(Infinity);
-      out[f] = depths.length ? median(depths) : NaN;
-    }
+    out[f] = depths.length ? median(depths) : NaN;
     if (options.onProgress && (f + 1) % every === 0) options.onProgress(f + 1, n);
   }
   options.onProgress?.(n, n);
   return out;
+}
+
+/**
+ * 射线从模型里面穿出去的距离。
+ * 没打中任何东西：Infinity（在 tMax 以内没有）或者 NaN（tMax 为 Infinity 时，说明射线射出去了）。
+ * 打中的面法线和射线反向（打到的是外表面，不是从里面穿出去）也算 NaN。
+ */
+function exitDistance(bvh: BVH, origin: number[], dir: number[], skip: number, tMax: number) {
+  const hit = raycast(bvh, origin, dir, skip, tMax);
+  if (!hit) return tMax === Infinity ? NaN : Infinity;
+  if (hit.t < 1e-9) return NaN;
+  const t = bvh.tris;
+  const h = hit.triangle * 9;
+  const f1x = t[h + 3] - t[h], f1y = t[h + 4] - t[h + 1], f1z = t[h + 5] - t[h + 2];
+  const f2x = t[h + 6] - t[h], f2y = t[h + 7] - t[h + 1], f2z = t[h + 8] - t[h + 2];
+  const hx = f1y * f2z - f1z * f2y, hy = f1z * f2x - f1x * f2z, hz = f1x * f2y - f1y * f2x;
+  return hx * dir[0] + hy * dir[1] + hz * dir[2] > 0 ? hit.t : NaN;
 }
 
 function median(values: number[]) {
@@ -114,7 +118,11 @@ function median(values: number[]) {
 }
 
 export interface ThicknessSummary {
-  /** 被测到的最薄处 */
+  /**
+   * 最薄处：从最薄的三角形开始累加面积，累计到 minSpotArea 时的厚度。
+   * 直接取最小值没有意义：棱角上常有面积只有 0.00001 mm² 的细长三角形，测出来几乎是 0，
+   * 但这么小的一点对打印没有影响。
+   */
   min: number;
   /** 比阈值薄的面积 */
   thinArea: number;
@@ -124,25 +132,42 @@ export interface ThicknessSummary {
   unmeasured: number;
 }
 
-/** 汇总：最薄多少、有多少面积低于最小壁厚 */
-export function summarizeThickness(tris: ArrayLike<number>, thickness: ArrayLike<number>, minWall: number): ThicknessSummary {
-  let min = Infinity, thinArea = 0, thinTriangles = 0, unmeasured = 0;
+function triangleArea(tris: ArrayLike<number>, f: number) {
+  const i = f * 9;
+  const e1x = tris[i + 3] - tris[i], e1y = tris[i + 4] - tris[i + 1], e1z = tris[i + 5] - tris[i + 2];
+  const e2x = tris[i + 6] - tris[i], e2y = tris[i + 7] - tris[i + 1], e2z = tris[i + 8] - tris[i + 2];
+  return Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x) / 2;
+}
+
+/** 汇总：最薄多少、有多少面积低于最小壁厚。minSpotArea 和 tris 同一单位（默认按毫米：1 mm²，大约一个 1 × 1 mm 的小斑点） */
+export function summarizeThickness(
+  tris: ArrayLike<number>,
+  thickness: ArrayLike<number>,
+  minWall: number,
+  minSpotArea = 1,
+): ThicknessSummary {
+  let thinArea = 0, thinTriangles = 0, unmeasured = 0;
+  const measured: number[] = [];
   for (let f = 0; f < thickness.length; f++) {
     const v = thickness[f];
     if (Number.isNaN(v)) {
       unmeasured++;
       continue;
     }
-    if (v < min) min = v;
+    measured.push(f);
     if (v < minWall) {
       thinTriangles++;
-      const i = f * 9;
-      const e1x = tris[i + 3] - tris[i], e1y = tris[i + 4] - tris[i + 1], e1z = tris[i + 5] - tris[i + 2];
-      const e2x = tris[i + 6] - tris[i], e2y = tris[i + 7] - tris[i + 1], e2z = tris[i + 8] - tris[i + 2];
-      thinArea += Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x) / 2;
+      thinArea += triangleArea(tris, f);
     }
   }
-  return { min: min === Infinity ? NaN : min, thinArea, thinTriangles, unmeasured };
+  measured.sort((a, b) => thickness[a] - thickness[b]);
+  let min = NaN, acc = 0;
+  for (const f of measured) {
+    acc += triangleArea(tris, f);
+    min = thickness[f];
+    if (acc >= minSpotArea) break;
+  }
+  return { min, thinArea, thinTriangles, unmeasured };
 }
 
 /**

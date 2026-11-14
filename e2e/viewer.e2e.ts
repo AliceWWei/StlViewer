@@ -234,3 +234,26 @@ test('repair leaves large holes open and says so', async ({ page }) => {
   await expect(page.locator('.repair-report')).toContainText('2 holes are too large to fill');
   await expect(field(page, 'Open edges')).toHaveText('192');
 });
+
+test('wall thickness analysis finds the thin walls of the fan shroud', async ({ page }) => {
+  await loadSample(page, 'box.stl');
+  await page.getByLabel('Analyze wall thickness (mark thin areas)').check();
+  // 方块每个方向都至少 10 mm，比射线上限还厚
+  await expect(field(page, 'Thinnest')).toHaveText('> 10.0 mm', { timeout: 30_000 });
+  await expect(page.getByText('Every wall is thick enough')).toBeVisible();
+
+  await loadSample(page, 'prusa-fan-shroud.stl');
+  await expect(field(page, 'Thin area')).toHaveText(/^[\d,.]+ mm² \([\d.]+%\)$/, { timeout: 30_000 });
+  await expect(page.getByText('Red areas are thinner than 0.8 mm')).toBeVisible();
+  const thinAt08 = parseFloat((await field(page, 'Thin area').innerText()).replace(/,/g, ''));
+  expect(thinAt08).toBeGreaterThan(10);
+
+  // 最小壁厚调到 2 mm，太薄的面积应该变大
+  await page.getByRole('slider', { name: 'Minimum wall' }).fill('2');
+  await expect(page.getByText('Red areas are thinner than 2.0 mm')).toBeVisible();
+  const thinAt2 = parseFloat((await field(page, 'Thin area').innerText()).replace(/,/g, ''));
+  expect(thinAt2).toBeGreaterThan(thinAt08);
+
+  await page.getByRole('combobox').filter({ hasText: 'Heatmap' }).selectOption('passFail');
+  await expect(page.locator('.legend')).toContainText('OK');
+});

@@ -100,3 +100,30 @@ describe('thicknessColor', () => {
     expect(thicknessColor(NaN, 0.8, 'heatmap')).toEqual([0.45, 0.45, 0.48]);
   });
 });
+
+describe('summarizeThickness', () => {
+  it('ignores tiny slivers when reporting the thinnest spot', () => {
+    // 一个大三角形 2 mm 厚，一个 0.00005 mm² 的细长三角形测出 0.01 mm
+    const tris = [0, 0, 0, 10, 0, 0, 0, 10, 0, 0, 0, 0, 0.01, 0, 0, 0, 0.01, 0];
+    const s = summarizeThickness(tris, [2, 0.01], 0.8);
+    expect(s.min).toBe(2);
+    expect(s.thinTriangles).toBe(1);
+  });
+});
+
+describe('computeThickness with a distance cap', () => {
+  it('marks thick areas as Infinity but open surfaces as unmeasured', () => {
+    const thick = computeThickness(box(30, 30, 30), { maxDistance: 10 });
+    expect([...thick].every((v) => v === Infinity)).toBe(true);
+    // 一个单独的平面：射线射出去什么也打不到，有上限时也不能当成“很厚”
+    const plane = computeThickness(toTriangleArray(new THREE.PlaneGeometry(10, 10)), { maxDistance: 1 });
+    expect([...plane].every(Number.isNaN)).toBe(true);
+  });
+
+  it('gives the same thin values with and without the cap', () => {
+    const part = loadSample('prusa-fan-shroud.stl');
+    const a = computeThickness(part);
+    const b = computeThickness(part, { maxDistance: 10 });
+    for (let f = 0; f < a.length; f++) if (a[f] < 5) expect(b[f]).toBeCloseTo(a[f], 4);
+  });
+});
