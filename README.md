@@ -43,6 +43,9 @@ src/
 ├── components/
 │   └── ViewerCanvas.tsx  # Thin React wrapper: mounts/disposes the Viewer, pushes new geometry
 └── App.tsx            # UI: file input, drag-and-drop, model info panel
+electron/
+├── main.cjs           # Electron main process: window, native menu, file reading, single instance
+└── preload.cjs        # contextBridge API exposed to the page as window.desktop
 ```
 
 The rendering code lives in a plain TypeScript class rather than inside React components. React only owns the lifecycle (create on mount, `dispose()` on unmount), which keeps the 3D logic unit-testable and portable (e.g. to an Electron shell). GPU resources (geometries, materials, the WebGL context) are released explicitly, since JavaScript garbage collection does not free GPU memory.
@@ -58,6 +61,22 @@ npm run build    # production build in dist/
 
 Sample models (3DBenchy, gear, teapot, vase, box, an L bracket in 3MF and a gear exported in inches) are in `public/samples/` and can be opened from the dropdown in the app. See `public/samples/README.md` for sources and licenses.
 
+## Desktop app (Electron)
+
+The same React app also runs as a Windows desktop app. The Electron part is small and lives in `electron/`:
+
+- `electron/main.cjs`: creates the window (`contextIsolation` on, `nodeIntegration` off, `sandbox` on) and the native menu, **File › Open… (Ctrl+O)** and **File › Exit**. Menu labels follow the app language. It reads the chosen file and sends its bytes to the page.
+- `electron/preload.cjs`: exposes a minimal `window.desktop` API (`openFileDialog`, `onOpenFile`, `setLanguage`) through `contextBridge`. The page wraps the bytes in a `File` and reuses the normal `parseModel` path. The web build has no `window.desktop`, so it is unaffected.
+- **File associations**: the installer registers `.stl`, `.obj` and `.3mf`. Double-clicking a model, or passing a path on the command line, opens it. If the app is already running, the file opens in the existing window (single-instance lock).
+
+```bash
+npm run electron:dev     # Vite dev server + Electron with hot reload
+npm run electron:dev -- public/samples/box.stl   # open a file on start
+npm run electron:build   # Windows installer in release/ (NSIS, x64)
+```
+
+`electron:build` builds the page with a relative base (`vite build --base ./`) so it loads from `file://`. The GitHub Pages build keeps its `/StlViewer/` base. The installer is unsigned and uses the default Electron icon.
+
 ## Roadmap
 
 - [x] Measurement tool (point-to-point distance)
@@ -69,7 +88,7 @@ Sample models (3DBenchy, gear, teapot, vase, box, an L bracket in 3MF and a gear
 - [x] Lay a selected face flat on the build plate
 - [x] mm / inch unit switch
 - [x] 3MF support
-- [ ] Electron desktop packaging
+- [x] Electron desktop packaging
 - [ ] End-to-end tests (Playwright) in CI
 
 ## Tech stack

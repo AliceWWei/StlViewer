@@ -2,13 +2,18 @@
   "name": "stl-viewer",
   "private": true,
   "version": "0.0.0",
+  "description": "STL / OBJ / 3MF viewer and 3D-printing pre-check",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:electron": "tsc -b && vite build --base ./",
+    "electron:dev": "node scripts/electron-dev.mjs",
+    "electron:build": "npm run build:electron && electron-builder --win nsis"
   },
   "dependencies": {
     "react": "^19.3.1",
@@ -21,9 +26,56 @@
     "@types/react-dom": "^19.3.0",
     "@types/three": "^0.187.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0",
     "oxlint": "^1.90.0",
     "typescript": "~7.0.2",
     "vite": "^8.3.6",
     "vitest": "^5.1.0"
+  },
+  "build": {
+    "appId": "io.github.alicewwei.stlviewer",
+    "productName": "StlViewer",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "stl",
+        "name": "STL model",
+        "description": "STL 3D model"
+      },
+      {
+        "ext": "obj",
+        "name": "OBJ model",
+        "description": "OBJ 3D model"
+      },
+      {
+        "ext": "3mf",
+        "name": "3MF model",
+        "description": "3MF 3D model"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }
