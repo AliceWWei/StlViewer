@@ -19,6 +19,7 @@ A browser-based 3D model viewer for 3D-printing files, built with **React + Type
   - Volume (signed tetrahedron method) and surface area
   - Material estimate in grams (PLA / PETG / ABS, adjustable infill)
   - Mesh health: open (hole) edges, non-manifold edges, degenerate triangles, watertight check
+  - Mesh repair: weld vertices, drop degenerate and duplicate triangles, make triangle winding consistent (BFS over shared edges) with normals facing out (cavities stay inward, by ray-parity nesting), fill small holes; export the result as binary STL
   - Printer build-volume check (Stratasys F170 / F370 and others), including "fits if rotated 90°"
   - Overhang highlighting in a custom shader with an adjustable support angle, plus total overhang area
 - **Slice preview**: plane/triangle intersection, segments joined into closed contours, hole detection by nesting depth, filled cross-section in 3D (clipping plane + cap) and a 2D top view, with layer height and layer slider
@@ -36,6 +37,7 @@ src/
 ├── viewer/
 │   ├── Viewer.ts      # Framework-agnostic Three.js viewer (scene, camera, lights, overhang shader, measuring, disposal)
 │   ├── geometry.ts    # Pure geometry: volume, area, mesh check, overhang area, material estimate, printer fit
+│   ├── repair.ts      # Mesh repair and binary STL export
 │   ├── slice.ts       # Slicing: plane intersection, contour joining, nesting, shoelace area
 │   ├── units.ts       # Unit conversion and "is this really mm?" heuristic
 │   ├── loadModel.ts   # STL / OBJ / 3MF parsing (3MF unit read from the model XML)
@@ -82,7 +84,7 @@ npm run electron:build   # Windows installer in release/ (NSIS, x64)
 
 | Layer | Tool | What it covers |
 |-------|------|----------------|
-| Unit | Vitest (`src/**/*.test.ts`) | Pure geometry: volume, area, mesh check, overhangs, slicing, units, i18n dictionary |
+| Unit | Vitest (`src/**/*.test.ts`) | Pure geometry: volume, area, mesh check, mesh repair, STL export, overhangs, slicing, units, i18n dictionary |
 | End-to-end | Playwright (`e2e/*.e2e.ts`) | Real browser: sample loading, file picker, drag-and-drop, rotate/zoom, language switch, error messages, 3MF units, inch conversion, overhangs, slicing, measuring, and a reference screenshot of the WebGL canvas |
 | Desktop | Playwright `_electron` (`e2e/electron/*.e2e.ts`, `npm run e2e:electron`) | The packaged Electron app: opening a file from the command line (file association), page isolation from Node.js, File › Open with a stubbed native dialog, cancel, and menu language |
 
