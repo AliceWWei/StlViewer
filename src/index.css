@@ -6,15 +6,16 @@ body {
   background: #1e1f24;
 }
 .app { position: relative; height: 100%; }
-.app.dragging::after {
-  content: "松开以加载模型";
-  position: absolute; inset: 12px;
+/* 拖拽文件时的提示层，文字由 React 按当前语言渲染 */
+.drop-overlay {
+  position: absolute; inset: 12px; z-index: 10;
   display: grid; place-items: center;
   border: 2px dashed #4f9dde; border-radius: 12px;
   background: rgba(79, 157, 222, 0.12);
   font-size: 20px; pointer-events: none;
 }
 .viewer { position: absolute; inset: 0; }
+.lang-switch { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 4px; }
 .panel {
   position: absolute; top: 16px; left: 16px;
   width: min(300px, calc(100% - 32px));

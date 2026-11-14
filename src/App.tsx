@@ -2,10 +2,23 @@ import { useCallback, useMemo, useState, type DragEvent } from 'react';
 import * as THREE from 'three';
 import { ViewerCanvas } from './components/ViewerCanvas';
 import { SliceCanvas } from './components/SliceCanvas';
-import { parseModel } from './viewer/loadModel';
+import { ModelLoadError, parseModel } from './viewer/loadModel';
+import { MESSAGES, useLang, type Lang, type Messages } from './i18n';
 import type { MeasureResult, ModelInfo, PickMode } from './viewer/Viewer';
 import { layerCount, sliceAt } from './viewer/slice';
-import { UNITS, suggestUnit, type UnitName } from './viewer/units';
+import {
+  DISPLAY_UNITS,
+  UNITS,
+  formatArea,
+  formatLength,
+  formatNumber,
+  formatSize,
+  formatVolume,
+  isDisplayUnit,
+  suggestUnit,
+  type DisplayUnit,
+  type UnitName,
+} from './viewer/units';
 import { isFacingDown } from './viewer/orient';
 import {
   MATERIALS,
@@ -22,35 +35,86 @@ import {
 } from './viewer/geometry';
 
 // 放在 public/samples 里的示例模型。BASE_URL 在本地是 /，部署到 GitHub Pages 后是 /StlViewer/
-const SAMPLES = [
-  { file: '3DBenchy.stl', label: '3DBenchy 小船（3D 打印测试模型）' },
-  { file: 'gear.stl', label: '齿轮' },
-  { file: 'teapot.stl', label: '犹他茶壶' },
-  { file: 'vase.stl', label: '花瓶（单层曲面，不封闭）' },
-  { file: 'box.stl', label: '长方体 20×10×30' },
-  { file: 'bracket.3mf', label: 'L 形支架（3MF，试试“放平”）' },
-  { file: 'gear-inch.stl', label: '齿轮（英寸单位导出的 STL）' },
+// 示例的显示名称在 i18n.ts 的 samples 里
+type SampleFile = keyof Messages['samples'];
+const SAMPLES: SampleFile[] = [
+  '3DBenchy.stl',
+  'gear.stl',
+  'teapot.stl',
+  'vase.stl',
+  'box.stl',
+  'bracket.3mf',
+  'gear-inch.stl',
 ];
+
+class SampleHttpError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`HTTP ${status}`);
+    this.status = status;
+  }
+}
+
+/** 错误信息存成“按语言生成文字的函数”，切换语言时已经显示的错误也会跟着变 */
+type ErrorText = (t: Messages) => string;
+
+function toErrorText(e: unknown): ErrorText {
+  if (e instanceof ModelLoadError) {
+    const name = e.fileName;
+    return e.code === 'unsupported' ? (t) => t.errUnsupported(name) : (t) => t.errNoMesh;
+  }
+  if (e instanceof SampleHttpError) {
+    const status = e.status;
+    return (t) => t.errSampleHttp(status);
+  }
+  const message = e instanceof Error ? e.message : String(e);
+  return () => message;
+}
+
 
 // 没有上传文件时先显示一个示例形状
 function sampleGeometry() {
   return new THREE.TorusKnotGeometry(20, 6, 200, 32);
 }
 
-const fmt = (n: number, digits = 1) =>
-  n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const fmt = formatNumber;
+
+const DISPLAY_UNIT_KEY = 'stlviewer.displayUnit';
+
+function initialDisplayUnit(): DisplayUnit {
+  try {
+    const saved = localStorage.getItem(DISPLAY_UNIT_KEY);
+    if (isDisplayUnit(saved)) return saved;
+  } catch {
+    // localStorage 不可用时用默认值
+  }
+  return 'mm';
+}
 
 export default function App() {
+  const { lang, setLang, t } = useLang();
+  const otherLang: Lang = lang === 'zh' ? 'en' : 'zh';
   // 文件解析出来的原始几何体（文件坐标，单位未知）
   const [source, setSource] = useState<THREE.BufferGeometry | null>(sampleGeometry);
   const [fileUnit, setFileUnit] = useState<UnitName | null>(null); // 文件自己声明的单位（3MF）
-  const [unit, setUnit] = useState<UnitName>('mm');
+  const [unit, setUnit] = useState<UnitName>('mm'); // 文件里的数字是什么单位
+  // 界面上用什么单位显示（只影响显示，内部计算都是毫米），记住用户的选择
+  const [displayUnit, setDisplayUnitState] = useState<DisplayUnit>(initialDisplayUnit);
+  const setDisplayUnit = (u: DisplayUnit) => {
+    setDisplayUnitState(u);
+    try {
+      localStorage.setItem(DISPLAY_UNIT_KEY, u);
+    } catch {
+      // 存不了就只在本次生效
+    }
+  };
+  const du = displayUnit;
   // 摆放朝向：每次“放平”都在这个旋转上再叠加一次
   const [orientation, setOrientation] = useState(() => new THREE.Quaternion());
-  const [faceNotice, setFaceNotice] = useState<string | null>(null);
-  const [fileName, setFileName] = useState('示例：环面纽结');
+  const [faceNotice, setFaceNotice] = useState(false); // 点到的面已经朝下
+  const [fileName, setFileName] = useState<string | null>(null); // null = 默认的环面纽结
   const [info, setInfo] = useState<ModelInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorText | null>(null);
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -84,7 +148,7 @@ export default function App() {
     setUnit(declaredUnit ?? 'mm');
     setOrientation(new THREE.Quaternion());
     setPickMode('none');
-    setFaceNotice(null);
+    setFaceNotice(false);
   }, []);
 
   // 几何分析只在换模型时算一次（Benchy 22 万个三角形也只要几百毫秒）
@@ -126,7 +190,7 @@ export default function App() {
       loadGeometry(parsed.geometry, parsed.unit);
       setFileName(file.name);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(() => toErrorText(e));
     }
   }, [loadGeometry]);
 
@@ -135,10 +199,10 @@ export default function App() {
     setPickMode('none');
     if (isFacingDown(n)) {
       // 比如 Benchy 的船底本来就是平的、已经贴在平台上，旋转量是 0，看起来像“没反应”
-      setFaceNotice('这个面已经朝下贴在平台上了，不需要再放平');
+      setFaceNotice(true);
       return;
     }
-    setFaceNotice(null);
+    setFaceNotice(false);
     const turn = new THREE.Quaternion().setFromUnitVectors(
       new THREE.Vector3(...n).normalize(),
       new THREE.Vector3(0, 0, -1),
@@ -172,11 +236,11 @@ export default function App() {
     setLoading(true);
     try {
       const res = await fetch(`${import.meta.env.BASE_URL}samples/${name}`);
-      if (!res.ok) throw new Error(`下载示例失败：HTTP ${res.status}`);
+      if (!res.ok) throw new SampleHttpError(res.status);
       // 包装成 File，复用和“打开文件”完全相同的解析流程
       await openFile(new File([await res.blob()], name));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(() => toErrorText(e));
     } finally {
       setLoading(false);
     }
@@ -189,7 +253,6 @@ export default function App() {
     if (file) openFile(file);
   };
 
-  const volumeCm3 = analysis ? Math.abs(analysis.volume) / 1000 : 0;
   const grams = analysis
     ? estimateMaterialGrams(analysis.volume, analysis.area, MATERIALS[materialIndex].density, {
         infill: infill / 100,
@@ -213,12 +276,27 @@ export default function App() {
         onMeasure={setMeasure}
         onFacePick={onFacePick}
         slice={slice}
+        displayUnit={displayUnit}
       />
 
+      {dragging && <div className="drop-overlay">{t.dropHint}</div>}
+
       <aside className="panel">
+        <div className="lang-switch">
+          {/* 一个按钮来回切换，按钮上显示“要切换到的语言”的简称：CN / EN */}
+          <button
+            className="small"
+            lang={otherLang === 'zh' ? 'zh-CN' : 'en'}
+            title={MESSAGES[otherLang].switchTo}
+            aria-label={MESSAGES[otherLang].switchTo}
+            onClick={() => setLang(otherLang)}
+          >
+            {MESSAGES[otherLang].langName}
+          </button>
+        </div>
         <h1>STL / OBJ / 3MF Viewer</h1>
         <label className="button">
-          打开文件
+          {t.openFile}
           <input
             type="file"
             accept=".stl,.obj,.3mf"
@@ -226,160 +304,178 @@ export default function App() {
             onChange={(e) => { const f = e.target.files?.[0]; if (f) openFile(f); }}
           />
         </label>
-        <p className="hint">也可以直接把文件拖进窗口</p>
+        <p className="hint">{t.dragHint}</p>
 
         <select className="select" value="" disabled={loading} onChange={(e) => openSample(e.target.value)}>
-          <option value="">{loading ? '加载中…' : '或者选一个示例模型…'}</option>
-          {SAMPLES.map((s) => (
-            <option key={s.file} value={s.file}>{s.label}</option>
+          <option value="">{loading ? t.loading : t.pickSample}</option>
+          {SAMPLES.map((f) => (
+            <option key={f} value={f}>{t.samples[f]}</option>
           ))}
         </select>
 
-        {error && <p className="error">{error}</p>}
+        {error && <p className="error">{error(t)}</p>}
 
-        <h2>模型</h2>
+        <h2>{t.model}</h2>
         <dl>
-          <dt>文件</dt><dd>{fileName}</dd>
+          <dt>{t.file}</dt><dd>{fileName ?? t.defaultModel}</dd>
           {info && (
             <>
-              <dt>三角形</dt><dd>{info.triangles.toLocaleString()}</dd>
-              <dt>尺寸 (mm)</dt>
-              <dd>{fmt(info.size.x)} × {fmt(info.size.y)} × {fmt(info.size.z)}</dd>
+              <dt>{t.triangles}</dt><dd>{info.triangles.toLocaleString()}</dd>
+              <dt>{t.size}</dt>
+              <dd>{formatSize([info.size.x, info.size.y, info.size.z], du)}</dd>
             </>
           )}
         </dl>
         <label className="check">
           <input type="checkbox" checked={showBounds} onChange={(e) => setShowBounds(e.target.checked)} />
-          显示包围盒和尺寸
+          {t.showBounds}
         </label>
 
-        <h2>单位</h2>
+        <h2>{t.units}</h2>
         <dl>
-          <dt>文件单位</dt>
+          <dt>{t.fileUnit}</dt>
           <dd>
             <select className="select inline" value={unit} onChange={(e) => setUnit(e.target.value as UnitName)}>
               {(Object.keys(UNITS) as UnitName[]).map((u) => (
-                <option key={u} value={u}>{UNITS[u].label}</option>
+                <option key={u} value={u}>{t.unitNames[u]}</option>
+              ))}
+            </select>
+          </dd>
+          <dt>{t.displayUnit}</dt>
+          <dd>
+            <select
+              className="select inline"
+              value={displayUnit}
+              onChange={(e) => { if (isDisplayUnit(e.target.value)) setDisplayUnit(e.target.value); }}
+            >
+              {(Object.keys(DISPLAY_UNITS) as DisplayUnit[]).map((u) => (
+                <option key={u} value={u}>{t.displayUnitNames[u]}</option>
               ))}
             </select>
           </dd>
         </dl>
+        {/* 把换算过程写出来：文件里的数字 × 单位 = 实际尺寸，避免“选了米数字反而变大”的困惑 */}
+        <p className="hint">
+          {t.unitConversion(fmt(rawMaxDim, 2), UNITS[unit].symbol, formatLength(rawMaxDim * UNITS[unit].toMm, du))}
+        </p>
         {fileUnit ? (
-          <p className="hint">3MF 文件声明了单位：{UNITS[fileUnit].label}，已自动换算成毫米</p>
+          <p className="hint">{t.unitDeclared(t.unitNames[fileUnit])}</p>
         ) : unitHint && unit === 'mm' ? (
           <p className="warn">
-            按毫米算模型只有 {fmt(rawMaxDim, 2)} mm，可能是用{UNITS[unitHint].label}导出的。
-            <button className="link" onClick={() => setUnit(unitHint)}>按{UNITS[unitHint].label}换算</button>
+            {t.unitSuspect(fmt(rawMaxDim, 2), t.unitNames[unitHint])}{' '}
+            <button className="link" onClick={() => setUnit(unitHint)}>{t.unitConvert(t.unitNames[unitHint])}</button>
           </p>
         ) : (
-          <p className="hint">STL / OBJ 不带单位，默认按毫米理解</p>
+          unit === 'mm' && <p className="hint">{t.unitNone}</p>
         )}
+        <p className="hint">{t.unitExplain}</p>
 
-        <h2>摆放</h2>
+        <h2>{t.placement}</h2>
         <div className="row">
           <button
             className={`small ${pickMode === 'face' ? 'active' : ''}`}
-            onClick={() => { setFaceNotice(null); setPickMode(pickMode === 'face' ? 'none' : 'face'); }}
+            onClick={() => { setFaceNotice(false); setPickMode(pickMode === 'face' ? 'none' : 'face'); }}
           >
-            {pickMode === 'face' ? '点击模型上的一个面…' : '选一个面放平'}
+            {pickMode === 'face' ? t.pickingFace : t.pickFace}
           </button>
           <button
             className="small"
-            onClick={() => { setFaceNotice(null); setOrientation(new THREE.Quaternion()); }}
+            onClick={() => { setFaceNotice(false); setOrientation(new THREE.Quaternion()); }}
           >
-            恢复原始朝向
+            {t.resetOrientation}
           </button>
         </div>
         {pickMode === 'face' && (
-          <p className="hint">鼠标移到模型上，黄色高亮的那一片会被放到平台上（曲面取这一片的平均朝向）</p>
+          <p className="hint">{t.pickFaceHint}</p>
         )}
-        {faceNotice && <p className="warn">{faceNotice}</p>}
+        {faceNotice && <p className="warn">{t.alreadyDown}</p>}
 
         {analysis && (
           <>
-            <h2>网格检查</h2>
+            <h2>{t.meshCheck}</h2>
             {analysis.mesh.watertight ? (
-              <p className="ok">✓ 表面封闭（水密），可以切片</p>
+              <p className="ok">{t.watertight}</p>
             ) : (
-              <p className="warn">⚠ 表面不封闭，体积和切片结果不可靠</p>
+              <p className="warn">{t.notWatertight}</p>
             )}
             <dl>
-              <dt>破洞边</dt><dd>{analysis.mesh.openEdges.toLocaleString()}</dd>
-              <dt>非流形边</dt><dd>{analysis.mesh.nonManifoldEdges.toLocaleString()}</dd>
-              <dt>退化三角形</dt><dd>{analysis.mesh.degenerateTriangles.toLocaleString()}</dd>
+              <dt>{t.openEdges}</dt><dd>{analysis.mesh.openEdges.toLocaleString()}</dd>
+              <dt>{t.nonManifoldEdges}</dt><dd>{analysis.mesh.nonManifoldEdges.toLocaleString()}</dd>
+              <dt>{t.degenerateTriangles}</dt><dd>{analysis.mesh.degenerateTriangles.toLocaleString()}</dd>
             </dl>
 
-            <h2>体积与用料</h2>
+            <h2>{t.volumeMaterial}</h2>
             <dl>
-              <dt>体积</dt><dd>{fmt(volumeCm3, 2)} cm³{analysis.mesh.watertight ? '' : '（仅供参考）'}</dd>
-              <dt>表面积</dt><dd>{fmt(analysis.area / 100, 2)} cm²</dd>
-              <dt>材料</dt>
+              <dt>{t.volume}</dt><dd>{formatVolume(Math.abs(analysis.volume), du)}{analysis.mesh.watertight ? '' : t.forReference}</dd>
+              <dt>{t.surfaceArea}</dt><dd>{formatArea(analysis.area, du)}</dd>
+              <dt>{t.material}</dt>
               <dd>
                 <select className="select inline" value={materialIndex} onChange={(e) => setMaterialIndex(+e.target.value)}>
                   {MATERIALS.map((m, i) => (
-                    <option key={m.name} value={i}>{m.name}（{m.density} g/cm³）</option>
+                    <option key={m.name} value={i}>{t.withDetail(m.name, `${m.density} g/cm³`)}</option>
                   ))}
                 </select>
               </dd>
-              <dt>填充率</dt>
+              <dt>{t.infill}</dt>
               <dd className="range">
                 <input type="range" min={0} max={100} step={5} value={infill} onChange={(e) => setInfill(+e.target.value)} />
                 {infill}%
               </dd>
-              <dt>估算用料</dt><dd>约 {fmt(grams)} g</dd>
+              <dt>{t.estimate}</dt><dd>{t.aboutGrams(fmt(grams))}</dd>
             </dl>
-            <p className="hint">按外壳 0.8 mm + 内部填充粗略估算，精确值以切片软件为准</p>
+            <p className="hint">{t.estimateHint}</p>
 
-            <h2>打印机</h2>
+            <h2>{t.printer}</h2>
             <select className="select" value={printerIndex} onChange={(e) => setPrinterIndex(+e.target.value)}>
-              <option value={-1}>不显示成型空间</option>
+              <option value={-1}>{t.noPrinter}</option>
               {PRINTERS.map((p, i) => (
-                <option key={p.name} value={i}>{p.name}（{p.build.join(' × ')}）</option>
+                <option key={p.name} value={i}>{t.withDetail(p.name, formatSize(p.build, du))}</option>
               ))}
             </select>
             {fit && (fit.fits ? (
-              <p className="ok">✓ 放得下{fit.needsRotation ? '（需要在平台上转 90°）' : ''}</p>
+              <p className="ok">{t.fits}{fit.needsRotation ? t.fitsRotated : ''}</p>
             ) : (
               <p className="warn">
-                ✗ 放不下：
+                {t.doesNotFit}
                 {['X', 'Y', 'Z']
-                  .map((axis, i) => (fit.overflow[i] > 0 ? `${axis} 超出 ${fmt(fit.overflow[i])} mm` : null))
+                  .map((axis, i) => (fit.overflow[i] > 0 ? t.overflow(axis, formatLength(fit.overflow[i], du)) : null))
                   .filter(Boolean)
-                  .join('，')}
+                  .join(t.listSep)}
               </p>
             ))}
 
-            <h2>支撑分析</h2>
+            <h2>{t.supports}</h2>
             <label className="check">
               <input type="checkbox" checked={overhangOn} onChange={(e) => setOverhangOn(e.target.checked)} />
-              高亮需要支撑的悬垂面
+              {t.highlightOverhang}
             </label>
             {overhangOn && (
               <dl>
-                <dt>角度阈值</dt>
+                <dt>{t.angleThreshold}</dt>
                 <dd className="range">
                   <input type="range" min={20} max={80} value={overhangAngle} onChange={(e) => setOverhangAngle(+e.target.value)} />
                   {overhangAngle}°
                 </dd>
-                <dt>悬垂面积</dt><dd>{fmt((overhangArea ?? 0) / 100, 2)} cm²</dd>
+                <dt>{t.overhangArea}</dt><dd>{formatArea(overhangArea ?? 0, du)}</dd>
               </dl>
             )}
 
-            <h2>切片预览</h2>
+            <h2>{t.slicePreview}</h2>
             <label className="check">
               <input type="checkbox" checked={sliceOn} onChange={(e) => setSliceOn(e.target.checked)} />
-              逐层查看截面
+              {t.sliceToggle}
             </label>
             {sliceOn && slice && (
               <>
                 <dl>
-                  <dt>层高</dt>
+                  <dt>{t.layerHeight}</dt>
                   <dd>
                     <select className="select inline" value={layerHeight} onChange={(e) => setLayerHeight(+e.target.value)}>
-                      {[0.1, 0.2, 0.3].map((h) => <option key={h} value={h}>{h} mm</option>)}
+                      {/* 层高是打印机设置，切片软件里一律用毫米，这里不跟着显示单位换算 */}
+                    {[0.1, 0.2, 0.3].map((h) => <option key={h} value={h}>{h} mm</option>)}
                     </select>
                   </dd>
-                  <dt>层</dt>
+                  <dt>{t.layer}</dt>
                   <dd className="range">
                     <input
                       type="range"
@@ -391,45 +487,47 @@ export default function App() {
                     />
                     {currentLayer} / {totalLayers}
                   </dd>
-                  <dt>高度</dt><dd>{fmt(slice.height - analysis.bounds.min[2], 2)} mm</dd>
-                  <dt>截面面积</dt><dd>{fmt(slice.area, 1)} mm²</dd>
-                  <dt>轮廓</dt>
+                  <dt>{t.height}</dt><dd>{formatLength(slice.height - analysis.bounds.min[2], du, du === 'mm' ? 2 : 3)}</dd>
+                  <dt>{t.sectionArea}</dt><dd>{formatArea(slice.area, du)}</dd>
+                  <dt>{t.contours}</dt>
                   <dd>
-                    {slice.contours.filter((c) => c.closed && c.depth % 2 === 0).length} 个实体，
-                    {slice.contours.filter((c) => c.closed && c.depth % 2 === 1).length} 个孔
+                    {t.contourCounts(
+                      slice.contours.filter((c) => c.closed && c.depth % 2 === 0).length,
+                      slice.contours.filter((c) => c.closed && c.depth % 2 === 1).length,
+                    )}
                   </dd>
                 </dl>
                 {slice.openContours > 0 && (
-                  <p className="warn">⚠ 有 {slice.openContours} 条轮廓没闭合（红色），说明这一层附近网格有破洞</p>
+                  <p className="warn">{t.openContours(slice.openContours)}</p>
                 )}
                 <SliceCanvas contours={slice.contours} bounds={analysis.bounds} />
               </>
             )}
 
-            <h2>测量</h2>
+            <h2>{t.measure}</h2>
             <label className="check">
               <input
                 type="checkbox"
                 checked={pickMode === 'measure'}
                 onChange={(e) => setPickMode(e.target.checked ? 'measure' : 'none')}
               />
-              两点测距（点击模型表面）
+              {t.measureToggle}
             </label>
             {pickMode === 'measure' && (
               measure?.points === 2 ? (
                 <dl>
-                  <dt>距离</dt><dd>{fmt(measure.distance, 2)} mm</dd>
+                  <dt>{t.distance}</dt><dd>{formatLength(measure.distance, du, 2)}</dd>
                   <dt>ΔX / ΔY / ΔZ</dt>
-                  <dd>{measure.delta.map((d) => fmt(d, 2)).join(' / ')}</dd>
+                  <dd>{formatSize(measure.delta, du).replaceAll(' × ', ' / ')}</dd>
                 </dl>
               ) : (
-                <p className="hint">{measure?.points === 1 ? '再点第二个点' : '点第一个点'}，按 Esc 清除</p>
+                <p className="hint">{measure?.points === 1 ? t.measureSecond : t.measureFirst}</p>
               )
             )}
           </>
         )}
 
-        <p className="hint">左键旋转 · 滚轮缩放 · 右键平移</p>
+        <p className="hint">{t.controlsHint}</p>
       </aside>
     </div>
   );

@@ -5,6 +5,17 @@ import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js';
 import { strFromU8, unzipSync } from 'three/examples/jsm/libs/fflate.module.js';
 import { UNITS, type UnitName } from './units';
 
+/** 读取模型失败的原因。只给出错误类型，具体文字由界面按当前语言显示 */
+export class ModelLoadError extends Error {
+  readonly code: 'unsupported' | 'noMesh';
+  readonly fileName: string;
+  constructor(code: 'unsupported' | 'noMesh', fileName = '') {
+    super(code === 'unsupported' ? `Unsupported file format: ${fileName}` : 'No mesh found in the file');
+    this.code = code;
+    this.fileName = fileName;
+  }
+}
+
 export type SupportedFormat = 'stl' | 'obj' | '3mf';
 
 export function detectFormat(fileName: string): SupportedFormat | null {
@@ -25,7 +36,7 @@ export interface ParsedModel {
  */
 export async function parseModel(file: File): Promise<ParsedModel> {
   const format = detectFormat(file.name);
-  if (!format) throw new Error(`不支持的文件格式：${file.name}（只支持 .stl / .obj / .3mf）`);
+  if (!format) throw new ModelLoadError('unsupported', file.name);
 
   if (format === 'stl') {
     // STL 有二进制和 ASCII 两种，STLLoader 接收 ArrayBuffer 会自动判断
@@ -67,7 +78,7 @@ function mergeMeshes(root: THREE.Object3D): THREE.BufferGeometry {
     for (let i = 0; i < pos.count; i++) positions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
     geom.dispose();
   });
-  if (positions.length === 0) throw new Error('文件里没有找到网格');
+  if (positions.length === 0) throw new ModelLoadError('noMesh');
   const merged = new THREE.BufferGeometry();
   merged.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   return merged;
