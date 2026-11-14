@@ -131,6 +131,15 @@ function createWindow() {
     if (DEV_URL ? !url.startsWith(DEV_URL) : !url.startsWith('file://')) e.preventDefault();
   });
 
+  // 页面里“导出 STL”触发的下载：弹出系统的“另存为”对话框，只显示 STL 类型
+  win.webContents.session.on('will-download', (_e, item) => {
+    item.setSaveDialogOptions({
+      title: lang === 'zh' ? '导出 STL' : 'Export STL',
+      defaultPath: item.getFilename(),
+      filters: [{ name: 'STL', extensions: ['stl'] }],
+    });
+  });
+
   if (DEV_URL) win.loadURL(DEV_URL);
   else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
 

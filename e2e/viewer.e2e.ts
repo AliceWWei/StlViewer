@@ -200,3 +200,37 @@ test('every sample in the list loads', async ({ page }) => {
     await expect(page.locator('aside .error')).toHaveCount(0);
   }
 });
+
+test('repairs the open teapot and exports it as STL', async ({ page }) => {
+  await loadSample(page, 'teapot.stl');
+  await expect(page.getByText('Surface is not closed', { exact: false })).toBeVisible();
+  await expect(field(page, 'Open edges')).toHaveText('192');
+
+  await page.getByRole('button', { name: 'Repair mesh' }).click();
+  await expect(page.locator('.repair-report')).toContainText('filled 6 holes (192 new triangles)');
+  await expect(field(page, 'Open edges')).toHaveText('0');
+  await expect(page.getByText('Surface is closed (watertight)')).toBeVisible();
+  await expect(field(page, 'Triangles')).toHaveText('9,312');
+
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export STL' }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe('teapot-repaired.stl');
+  const bytes = readFileSync(await file.path());
+  // 二进制 STL：84 字节头 + 每个三角形 50 字节
+  expect(bytes.readUInt32LE(80)).toBe(9312);
+  expect(bytes.length).toBe(84 + 9312 * 50);
+
+  // 导出的文件再打开，应该是封闭的
+  await page.locator('input[type=file]').setInputFiles({ name: 'teapot-repaired.stl', mimeType: 'model/stl', buffer: bytes });
+  await expect(field(page, 'File')).toHaveText('teapot-repaired.stl');
+  await expect(page.getByText('Surface is closed (watertight)')).toBeVisible();
+});
+
+test('repair leaves large holes open and says so', async ({ page }) => {
+  await loadSample(page, 'vase.stl');
+  await page.getByRole('button', { name: 'Repair mesh' }).click();
+  await expect(page.locator('.repair-report')).toContainText('Nothing to repair');
+  await expect(page.locator('.repair-report')).toContainText('2 holes are too large to fill');
+  await expect(field(page, 'Open edges')).toHaveText('192');
+});

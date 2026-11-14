@@ -6,6 +6,7 @@ import { ModelLoadError, parseModel } from './viewer/loadModel';
 import { MESSAGES, useLang, type Lang, type Messages } from './i18n';
 import type { MeasureResult, ModelInfo, PickMode } from './viewer/Viewer';
 import { layerCount, sliceAt } from './viewer/slice';
+import { repairMesh, toBinarySTL, type RepairReport } from './viewer/repair';
 import {
   DISPLAY_UNITS,
   UNITS,
@@ -119,6 +120,7 @@ export default function App() {
   const [error, setError] = useState<ErrorText | null>(null);
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [repairReport, setRepairReport] = useState<RepairReport | null>(null);
 
   // 分析选项
   const [materialIndex, setMaterialIndex] = useState(0);
@@ -151,6 +153,7 @@ export default function App() {
     setOrientation(new THREE.Quaternion());
     setPickMode('none');
     setFaceNotice(false);
+    setRepairReport(null);
   }, []);
 
   // 几何分析只在换模型时算一次（Benchy 22 万个三角形也只要几百毫秒）
@@ -211,6 +214,33 @@ export default function App() {
   useEffect(() => {
     window.desktop?.setLanguage(lang);
   }, [lang]);
+
+  // 修复：在文件坐标上修（单位、朝向不变），修好的几何体替换原来的，后面的分析会自动重新算
+  const onRepair = useCallback(() => {
+    if (!source) return;
+    const { tris, report } = repairMesh(toTriangleArray(source));
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(tris, 3));
+    setSource(g);
+    setRepairReport(report);
+  }, [source]);
+
+  // 导出：把当前看到的模型（毫米、包含摆放旋转）写成二进制 STL 下载。
+  // 桌面版里 Electron 会弹出系统的“另存为”对话框
+  const onExport = useCallback(() => {
+    if (!analysis) return;
+    const base = (fileName ?? 'torus-knot').replace(/\.[^.]+$/, '');
+    const name = `${base}${repairReport ? '-repaired' : ''}.stl`;
+    const blob = new Blob([toBinarySTL(analysis.tris, `${base} exported by StlViewer, units: mm`)], {
+      type: 'model/stl',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }, [analysis, fileName, repairReport]);
 
   // 放平：把点到的面的法线 n 转到正下方 (0, 0, -1)，这个面就贴在平台上了
   const onFacePick = useCallback((n: Vec3) => {
@@ -425,6 +455,12 @@ export default function App() {
               <dt>{t.nonManifoldEdges}</dt><dd>{analysis.mesh.nonManifoldEdges.toLocaleString()}</dd>
               <dt>{t.degenerateTriangles}</dt><dd>{analysis.mesh.degenerateTriangles.toLocaleString()}</dd>
             </dl>
+            <div className="row">
+              <button className="small" onClick={onRepair}>{t.repairMesh}</button>
+              <button className="small" onClick={onExport}>{t.exportStl}</button>
+            </div>
+            {repairReport && <RepairSummary report={repairReport} t={t} />}
+            <p className="hint">{t.exportHint}</p>
 
             <h2>{t.volumeMaterial}</h2>
             <dl>
@@ -551,6 +587,31 @@ export default function App() {
 
         <p className="hint">{t.controlsHint}</p>
       </aside>
+    </div>
+  );
+}
+
+/** 修复结果：只列出真正做了的修改 */
+function RepairSummary({ report: r, t }: { report: RepairReport; t: Messages }) {
+  const n = (v: number) => v.toLocaleString();
+  const changes = [
+    r.removedDegenerate > 0 && t.repairDegenerate(n(r.removedDegenerate)),
+    r.removedDuplicate > 0 && t.repairDuplicate(n(r.removedDuplicate)),
+    r.flippedTriangles > 0 && t.repairFlipped(n(r.flippedTriangles)),
+    r.filledHoles > 0 && t.repairFilled(n(r.filledHoles), n(r.addedTriangles)),
+  ].filter((c): c is string => !!c);
+  return (
+    <div className="repair-report">
+      {changes.length === 0 ? (
+        <p className="ok">{t.repairNothing}</p>
+      ) : (
+        <>
+          <p className="ok">{t.repairDone}</p>
+          <ul>{changes.map((c) => <li key={c}>{c}</li>)}</ul>
+        </>
+      )}
+      {r.skippedHoles > 0 && <p className="warn">{t.repairSkipped(n(r.skippedHoles))}</p>}
+      <p className="hint">{t.repairWelded(n(r.originalVertices), n(r.weldedVertices))}</p>
     </div>
   );
 }

@@ -50,6 +50,8 @@ dd { margin: 0; word-break: break-all; }
 .range input { width: 100px; }
 .ok { color: #5ad17a; font-size: 13px; margin: 6px 0; }
 .warn { color: #ffb347; font-size: 13px; margin: 6px 0; }
+.repair-report ul { margin: 2px 0 6px; padding-left: 18px; font-size: 12px; color: #c9cbd3; }
+.repair-report li { margin: 2px 0; }
 .label {
   padding: 2px 6px; border-radius: 4px; font-size: 12px; font-weight: 600;
   white-space: nowrap; pointer-events: none;
