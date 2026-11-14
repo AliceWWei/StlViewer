@@ -84,6 +84,7 @@ npm run electron:build   # Windows installer in release/ (NSIS, x64)
 |-------|------|----------------|
 | Unit | Vitest (`src/**/*.test.ts`) | Pure geometry: volume, area, mesh check, overhangs, slicing, units, i18n dictionary |
 | End-to-end | Playwright (`e2e/*.e2e.ts`) | Real browser: sample loading, file picker, drag-and-drop, rotate/zoom, language switch, error messages, 3MF units, inch conversion, overhangs, slicing, measuring, and a reference screenshot of the WebGL canvas |
+| Desktop | Playwright `_electron` (`e2e/electron/*.e2e.ts`, `npm run e2e:electron`) | The packaged Electron app: opening a file from the command line (file association), page isolation from Node.js, File › Open with a stubbed native dialog, cancel, and menu language |
 
 Every test also fails if the page logs a JavaScript error. Both suites run on every pull request, and the GitHub Pages deployment only happens when they pass. WebGL runs on SwiftShader (software rendering) in CI, so no GPU is needed.
 
