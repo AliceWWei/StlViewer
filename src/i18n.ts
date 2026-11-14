@@ -15,6 +15,7 @@ const zh = {
   dropHint: '松开以加载模型',
   openFile: '打开文件',
   dragHint: '也可以直接把文件拖进窗口',
+  desktopOpenHint: '，或者按 Ctrl+O',
   loading: '加载中…',
   pickSample: '或者选一个示例模型…',
   samples: {
@@ -128,6 +129,7 @@ const en: Messages = {
   dropHint: 'Drop to load the model',
   openFile: 'Open file',
   dragHint: 'You can also drag a file into the window',
+  desktopOpenHint: ', or press Ctrl+O',
   loading: 'Loading…',
   pickSample: 'Or pick a sample model…',
   samples: {

@@ -40,3 +40,25 @@ jobs:
             playwright-report
             test-results
           retention-days: 7
+
+  electron:
+    name: Desktop app tests (Electron + Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # 桌面版在 Windows 上发布，但测试的是同一套主进程 / preload / 页面代码，Linux + 虚拟显示器（xvfb）就够了
+      - run: xvfb-run -a npm run e2e:electron
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-electron
+          path: |
+            playwright-report-electron
+            test-results
+          retention-days: 7

@@ -12,6 +12,7 @@ const PORT = 4173;
 export default defineConfig({
   testDir: './e2e',
   testMatch: '**/*.e2e.ts',
+  testIgnore: 'electron/**', // 桌面版测试有自己的配置：playwright.electron.config.ts
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0,

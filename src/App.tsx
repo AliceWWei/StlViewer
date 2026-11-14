@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type DragEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react';
 import * as THREE from 'three';
 import { ViewerCanvas } from './components/ViewerCanvas';
 import { SliceCanvas } from './components/SliceCanvas';
@@ -194,6 +194,22 @@ export default function App() {
     }
   }, [loadGeometry]);
 
+  // 桌面版（Electron）：菜单 / 命令行 / 双击关联文件打开的模型由主进程读好发过来，
+  // 包装成 File 后走和网页上传完全相同的流程。网页版没有 window.desktop，这里什么也不做。
+  useEffect(() => {
+    const desktop = window.desktop;
+    if (!desktop) return;
+    return desktop.onOpenFile(({ name, data }) => {
+      // 复制一份到普通的 ArrayBuffer，File 构造函数对 SharedArrayBuffer 视图有类型限制
+      openFile(new File([data.slice()], name));
+    });
+  }, [openFile]);
+
+  // 原生菜单跟着界面语言
+  useEffect(() => {
+    window.desktop?.setLanguage(lang);
+  }, [lang]);
+
   // 放平：把点到的面的法线 n 转到正下方 (0, 0, -1)，这个面就贴在平台上了
   const onFacePick = useCallback((n: Vec3) => {
     setPickMode('none');
@@ -304,7 +320,7 @@ export default function App() {
             onChange={(e) => { const f = e.target.files?.[0]; if (f) openFile(f); }}
           />
         </label>
-        <p className="hint">{t.dragHint}</p>
+        <p className="hint">{t.dragHint}{window.desktop ? t.desktopOpenHint : ''}</p>
 
         <select className="select" value="" disabled={loading} onChange={(e) => openSample(e.target.value)}>
           <option value="">{loading ? t.loading : t.pickSample}</option>

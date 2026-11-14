@@ -27,3 +27,7 @@ dist-ssr
 dist-e2e
 test-results
 playwright-report
+
+# Electron 安装包输出
+release
+playwright-report-electron
