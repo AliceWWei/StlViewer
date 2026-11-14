@@ -4,7 +4,7 @@
  * 不加速时，一条射线要和所有三角形逐个求交：Benchy 有 22 万个三角形，壁厚分析要发上百万条射线，
  * 总共上千亿次计算，根本算不完。
  *
- * BVH 把三角形按位置分成两堆，每堆再分两堆……每个节点记录“这一堆三角形的包围盒”。
+ * BVH 把三角形按位置分成两堆（用 SAH 选切分位置，见下面），每堆再分两堆……每个节点记录“这一堆三角形的包围盒”。
  * 射线先和包围盒求交，打不中整个盒子就跳过里面的所有三角形，
  * 平均每条射线只需要检查几十个三角形，复杂度从 O(n) 降到大约 O(log n)。
  *
@@ -36,9 +36,16 @@ export function buildBVH(input: ArrayLike<number>): BVH {
   const n = Math.floor(tris.length / 9);
   const order = new Uint32Array(n);
   const centroids = new Float64Array(n * 3);
+  // 每个三角形自己的包围盒，建树时要反复用，先算好
+  const triBounds = new Float64Array(n * 6);
   for (let t = 0; t < n; t++) {
     order[t] = t;
-    for (let k = 0; k < 3; k++) centroids[t * 3 + k] = (tris[t * 9 + k] + tris[t * 9 + 3 + k] + tris[t * 9 + 6 + k]) / 3;
+    for (let k = 0; k < 3; k++) {
+      const a = tris[t * 9 + k], b = tris[t * 9 + 3 + k], c = tris[t * 9 + 6 + k];
+      centroids[t * 3 + k] = (a + b + c) / 3;
+      triBounds[t * 6 + k] = Math.min(a, b, c);
+      triBounds[t * 6 + 3 + k] = Math.max(a, b, c);
+    }
   }
 
   // 节点数最多 2n - 1（每次分裂多出一个节点）
@@ -60,12 +67,13 @@ export function buildBVH(input: ArrayLike<number>): BVH {
     let cMin0 = Infinity, cMin1 = Infinity, cMin2 = Infinity, cMax0 = -Infinity, cMax1 = -Infinity, cMax2 = -Infinity;
     for (let i = start; i < end; i++) {
       const t = order[i];
-      for (let v = 0; v < 3; v++) {
-        const x = tris[t * 9 + v * 3], y = tris[t * 9 + v * 3 + 1], z = tris[t * 9 + v * 3 + 2];
-        if (x < minX) minX = x; if (x > maxX) maxX = x;
-        if (y < minY) minY = y; if (y > maxY) maxY = y;
-        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-      }
+      const o = t * 6;
+      if (triBounds[o] < minX) minX = triBounds[o];
+      if (triBounds[o + 1] < minY) minY = triBounds[o + 1];
+      if (triBounds[o + 2] < minZ) minZ = triBounds[o + 2];
+      if (triBounds[o + 3] > maxX) maxX = triBounds[o + 3];
+      if (triBounds[o + 4] > maxY) maxY = triBounds[o + 4];
+      if (triBounds[o + 5] > maxZ) maxZ = triBounds[o + 5];
       const cx = centroids[t * 3], cy = centroids[t * 3 + 1], cz = centroids[t * 3 + 2];
       if (cx < cMin0) cMin0 = cx; if (cx > cMax0) cMax0 = cx;
       if (cy < cMin1) cMin1 = cy; if (cy > cMax1) cMax1 = cy;
@@ -74,17 +82,82 @@ export function buildBVH(input: ArrayLike<number>): BVH {
     bounds.set([minX, minY, minZ, maxX, maxY, maxZ], node * 6);
 
     const count = end - start;
-    const ext = [cMax0 - cMin0, cMax1 - cMin1, cMax2 - cMin2];
-    const axis = ext[0] >= ext[1] && ext[0] >= ext[2] ? 0 : ext[1] >= ext[2] ? 1 : 2;
-    if (count <= LEAF_SIZE || ext[axis] === 0) {
+    if (count <= LEAF_SIZE) {
       nodes[node * 2] = start;
       nodes[node * 2 + 1] = -count;
       continue;
     }
 
-    // 沿最长的轴，按三角形中心的中位数分成两半（快速选择，平均 O(n)）
-    const mid = (start + end) >> 1;
-    quickSelect(order, centroids, axis, start, end - 1, mid);
+    // 选切分位置：SAH（表面积启发式）。
+    // 射线打中一个盒子的概率大约和盒子的表面积成正比，所以“左盒表面积 × 左边三角形数 + 右盒表面积 × 右边三角形数”
+    // 越小，平均要检查的三角形越少。把每个轴按三角形中心分成 BINS 个格子，试每个格子边界作为切分位置。
+    const cMin = [cMin0, cMin1, cMin2];
+    const cExt = [cMax0 - cMin0, cMax1 - cMin1, cMax2 - cMin2];
+    let bestAxis = -1, bestSplit = 0, bestCost = Infinity;
+    for (let axis = 0; axis < 3; axis++) {
+      if (cExt[axis] <= 0) continue;
+      binCount.fill(0);
+      binBounds.fill(Infinity);
+      for (let b = 0; b < BINS; b++) for (let k = 3; k < 6; k++) binBounds[b * 6 + k] = -Infinity;
+      const scale = BINS / cExt[axis];
+      for (let i = start; i < end; i++) {
+        const t = order[i];
+        const b = Math.min(BINS - 1, Math.floor((centroids[t * 3 + axis] - cMin[axis]) * scale));
+        binCount[b]++;
+        for (let k = 0; k < 3; k++) {
+          const lo = triBounds[t * 6 + k], hi = triBounds[t * 6 + 3 + k];
+          if (lo < binBounds[b * 6 + k]) binBounds[b * 6 + k] = lo;
+          if (hi > binBounds[b * 6 + 3 + k]) binBounds[b * 6 + 3 + k] = hi;
+        }
+      }
+      // 从左往右累加，得到“前 i 个格子”的三角形数和表面积；再从右往左同样算一遍
+      leftArea.fill(0);
+      let acc = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      let accCount = 0;
+      for (let b = 0; b < BINS - 1; b++) {
+        acc = grow(acc, binBounds, b);
+        accCount += binCount[b];
+        leftArea[b] = accCount ? surfaceArea(acc) * accCount : 0;
+      }
+      acc = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      accCount = 0;
+      for (let b = BINS - 1; b > 0; b--) {
+        acc = grow(acc, binBounds, b);
+        accCount += binCount[b];
+        const cost = leftArea[b - 1] + (accCount ? surfaceArea(acc) * accCount : 0);
+        if (cost < bestCost) {
+          bestCost = cost;
+          bestAxis = axis;
+          bestSplit = b; // 格子编号 < b 的放左边
+        }
+      }
+    }
+
+    let mid = -1;
+    if (bestAxis >= 0) {
+      const scale = BINS / cExt[bestAxis];
+      let i = start, j = end - 1;
+      while (i <= j) {
+        const b = Math.min(BINS - 1, Math.floor((centroids[order[i] * 3 + bestAxis] - cMin[bestAxis]) * scale));
+        if (b < bestSplit) i++;
+        else {
+          const t = order[i]; order[i] = order[j]; order[j] = t;
+          j--;
+        }
+      }
+      mid = i;
+    }
+    if (mid <= start || mid >= end) {
+      // 所有三角形中心都挤在一起（或者 SAH 切不开）：退回到按数量对半分
+      const axis = cExt[0] >= cExt[1] && cExt[0] >= cExt[2] ? 0 : cExt[1] >= cExt[2] ? 1 : 2;
+      if (cExt[axis] === 0) {
+        nodes[node * 2] = start;
+        nodes[node * 2 + 1] = -count;
+        continue;
+      }
+      mid = (start + end) >> 1;
+      quickSelect(order, centroids, axis, start, end - 1, mid);
+    }
 
     const left = newNode();
     const right = newNode();
@@ -94,6 +167,24 @@ export function buildBVH(input: ArrayLike<number>): BVH {
   }
 
   return { tris, bounds, nodes, order, nodeCount };
+}
+
+const BINS = 16;
+const binCount = new Int32Array(BINS);
+const binBounds = new Float64Array(BINS * 6);
+const leftArea = new Float64Array(BINS);
+
+function grow(acc: number[], b: Float64Array, i: number) {
+  if (b[i * 6] === Infinity) return acc; // 空格子
+  return [
+    Math.min(acc[0], b[i * 6]), Math.min(acc[1], b[i * 6 + 1]), Math.min(acc[2], b[i * 6 + 2]),
+    Math.max(acc[3], b[i * 6 + 3]), Math.max(acc[4], b[i * 6 + 4]), Math.max(acc[5], b[i * 6 + 5]),
+  ];
+}
+
+function surfaceArea(b: number[]) {
+  const x = b[3] - b[0], y = b[4] - b[1], z = b[5] - b[2];
+  return 2 * (x * y + y * z + z * x);
 }
 
 /** 让 order[start..end] 中第 k 个位置放上按中心坐标排第 k 的三角形，左边都不大于它，右边都不小于它 */
@@ -115,6 +206,9 @@ function quickSelect(order: Uint32Array, c: Float64Array, axis: number, lo: numb
   }
 }
 
+/** 遍历用的栈，所有射线共用一个，避免每条射线都分配内存（树的深度远小于 128） */
+const STACK = new Int32Array(128);
+
 export interface Hit {
   /** 沿射线的距离（方向向量是单位向量时就是实际距离） */
   t: number;
@@ -127,15 +221,20 @@ export interface Hit {
  * 三段区间的交集非空就说明打中了盒子。返回进入盒子的距离，没打中返回 Infinity。
  */
 function hitBox(b: Float64Array, i: number, ox: number, oy: number, oz: number, ix: number, iy: number, iz: number, tMax: number) {
-  let t0 = (b[i] - ox) * ix, t1 = (b[i + 3] - ox) * ix;
-  let tNear = Math.min(t0, t1), tFar = Math.max(t0, t1);
-  t0 = (b[i + 1] - oy) * iy; t1 = (b[i + 4] - oy) * iy;
-  tNear = Math.max(tNear, Math.min(t0, t1)); tFar = Math.min(tFar, Math.max(t0, t1));
+  // 这个函数每条射线要调用上百次，用 if 代替 Math.min / Math.max，快不少
+  let tNear = (b[i] - ox) * ix, tFar = (b[i + 3] - ox) * ix;
+  if (tNear > tFar) { const s = tNear; tNear = tFar; tFar = s; }
+  let t0 = (b[i + 1] - oy) * iy, t1 = (b[i + 4] - oy) * iy;
+  if (t0 > t1) { const s = t0; t0 = t1; t1 = s; }
+  if (t0 > tNear) tNear = t0;
+  if (t1 < tFar) tFar = t1;
   t0 = (b[i + 2] - oz) * iz; t1 = (b[i + 5] - oz) * iz;
-  tNear = Math.max(tNear, Math.min(t0, t1)); tFar = Math.min(tFar, Math.max(t0, t1));
-  // NaN（射线正好在盒子的面上）当作打中，宁可多查也不要漏掉
-  if (tFar < Math.max(tNear, 0) || tNear > tMax) return Infinity;
-  return Number.isNaN(tNear) ? 0 : tNear;
+  if (t0 > t1) { const s = t0; t0 = t1; t1 = s; }
+  if (t0 > tNear) tNear = t0;
+  if (t1 < tFar) tFar = t1;
+  // 射线正好贴着盒子的面时会出现 NaN（0 × Infinity），比较结果都是 false，等于当作打中：宁可多查也不漏
+  if (tFar < 0 || tFar < tNear || tNear > tMax) return Infinity;
+  return tNear > 0 ? tNear : 0;
 }
 
 /**
@@ -177,7 +276,7 @@ export function raycast(
   let best = tMax;
   let bestTri = -1;
 
-  const stack = new Int32Array(64);
+  const stack = STACK;
   let sp = 0;
   if (hitBox(bounds, 0, ox, oy, oz, ix, iy, iz, best) === Infinity) return null;
   stack[sp++] = 0;
