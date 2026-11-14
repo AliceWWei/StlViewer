@@ -37,14 +37,16 @@ import {
 // 放在 public/samples 里的示例模型。BASE_URL 在本地是 /，部署到 GitHub Pages 后是 /StlViewer/
 // 示例的显示名称在 i18n.ts 的 samples 里
 type SampleFile = keyof Messages['samples'];
-const SAMPLES: SampleFile[] = [
-  '3DBenchy.stl',
-  'gear.stl',
-  'teapot.stl',
-  'vase.stl',
-  'box.stl',
-  'bracket.3mf',
-  'gear-inch.stl',
+type SampleGroup = keyof Messages['sampleGroups'];
+const SAMPLE_GROUPS: [SampleGroup, SampleFile[]][] = [
+  // 打印机调试和测试时最常打印的模型
+  ['testPrints', ['3DBenchy.stl', 'voron-cube.stl', 'heatset-practice.stl', 'chain-loop.3mf']],
+  // 真实的功能件：孔、卡扣、悬垂、桥接都有，适合试悬垂分析和切片
+  ['functional', ['prusa-extruder-body.stl', 'prusa-fan-shroud.stl', 'prusa-spool-holder.stl', 'cube-gears.3mf', 'heart-gears.3mf']],
+  // 有机曲面
+  ['organic', ['spot.stl', 'teapot.stl']],
+  // 为演示某个功能专门做的简单模型
+  ['demo', ['box.stl', 'gear.stl', 'vase.stl', 'bracket.3mf', 'gear-inch.stl']],
 ];
 
 class SampleHttpError extends Error {
@@ -324,8 +326,12 @@ export default function App() {
 
         <select className="select" value="" disabled={loading} onChange={(e) => openSample(e.target.value)}>
           <option value="">{loading ? t.loading : t.pickSample}</option>
-          {SAMPLES.map((f) => (
-            <option key={f} value={f}>{t.samples[f]}</option>
+          {SAMPLE_GROUPS.map(([group, files]) => (
+            <optgroup key={group} label={t.sampleGroups[group]}>
+              {files.map((f) => (
+                <option key={f} value={f}>{t.samples[f]}</option>
+              ))}
+            </optgroup>
           ))}
         </select>
 

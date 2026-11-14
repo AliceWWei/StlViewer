@@ -188,3 +188,15 @@ test('measures the distance between two clicked points', async ({ page }) => {
   await expect(page.getByText('Click the first point; Esc to clear')).toBeVisible();
 });
 
+test('every sample in the list loads', async ({ page }) => {
+  test.setTimeout(180_000);
+  const files = await page.locator('aside select').first().locator('option').evaluateAll((os) =>
+    os.map((o) => (o as HTMLOptionElement).value).filter(Boolean),
+  );
+  expect(files.length).toBeGreaterThanOrEqual(16);
+  for (const file of files) {
+    await loadSample(page, file);
+    await expect(field(page, 'Triangles')).toHaveText(/^[\d,]+$/);
+    await expect(page.locator('aside .error')).toHaveCount(0);
+  }
+});
