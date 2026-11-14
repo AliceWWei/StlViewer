@@ -53,10 +53,20 @@ The rendering code lives in a plain TypeScript class rather than inside React co
 npm install
 npm run dev      # http://localhost:5173
 npm test         # unit tests (Vitest)
+npm run e2e      # end-to-end tests (Playwright; builds and serves the app itself)
 npm run build    # production build in dist/
 ```
 
 Sample models (3DBenchy, gear, teapot, vase, box, an L bracket in 3MF and a gear exported in inches) are in `public/samples/` and can be opened from the dropdown in the app. See `public/samples/README.md` for sources and licenses.
+
+## Testing
+
+| Layer | Tool | What it covers |
+|-------|------|----------------|
+| Unit | Vitest (`src/**/*.test.ts`) | Pure geometry: volume, area, mesh check, overhangs, slicing, units, i18n dictionary |
+| End-to-end | Playwright (`e2e/*.e2e.ts`) | Real browser: sample loading, file picker, drag-and-drop, rotate/zoom, language switch, error messages, 3MF units, inch conversion, overhangs, slicing, measuring, and a reference screenshot of the WebGL canvas |
+
+Every test also fails if the page logs a JavaScript error. Both suites run on every pull request, and the GitHub Pages deployment only happens when they pass. WebGL runs on SwiftShader (software rendering) in CI, so no GPU is needed.
 
 ## Roadmap
 
@@ -70,7 +80,7 @@ Sample models (3DBenchy, gear, teapot, vase, box, an L bracket in 3MF and a gear
 - [x] mm / inch unit switch
 - [x] 3MF support
 - [ ] Electron desktop packaging
-- [ ] End-to-end tests (Playwright) in CI
+- [x] End-to-end tests (Playwright) in CI
 
 ## Tech stack
 
